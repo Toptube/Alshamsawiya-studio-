@@ -1,0 +1,6 @@
+{
+  "name": "ستوديو الشمساوية",
+  "description": "منصة ستوديو الشمساوية لإزالة وعزل خلفيات الصور بدقة فائقة ومعالجة الدفعات وتصدير التقارير بالذكاء الاصطناعي",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

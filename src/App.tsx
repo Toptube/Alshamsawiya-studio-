@@ -8,10 +8,11 @@ import confetti from 'canvas-confetti';
 import { Header } from './components/Header';
 import { StudioWorkspace } from './components/StudioWorkspace';
 import { BackgroundGenerator } from './components/BackgroundGenerator';
+import { StoryboardWorkspace } from './components/StoryboardWorkspace';
+import { SupirEnhancer } from './components/SupirEnhancer';
 import { SidebarDrawer } from './components/SidebarDrawer';
 import { ReportsView } from './components/ReportsView';
 import { AnalyticsView } from './components/AnalyticsView';
-import { ErrorLogsView } from './components/ErrorLogsView';
 import { ImageComparisonModal } from './components/ImageComparisonModal';
 import { UserGuideModal } from './components/UserGuideModal';
 import { SupportModal } from './components/SupportModal';
@@ -38,8 +39,8 @@ const DEFAULT_SETTINGS: RembgSettings = {
 };
 
 export default function App() {
-  // Primary Tabs: 'removal' (إزالة الخلفية) & 'generator' (توليد الخلفيات)
-  const [activeTab, setActiveTab] = useState<'removal' | 'generator' | 'reports' | 'analytics' | 'errors'>('removal');
+  // Primary Tabs: 'removal' (عزل) | 'supir' (تحسين) | 'generator' (مشاهد) | 'storyboard' (لوحتي)
+  const [activeTab, setActiveTab] = useState<'removal' | 'supir' | 'generator' | 'storyboard' | 'reports' | 'analytics'>('removal');
   const [isDark, setIsDark] = useState<boolean>(true);
   const [isArabic, setIsArabic] = useState<boolean>(true);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
@@ -391,27 +392,21 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#070E1A] text-slate-900 dark:text-slate-100 transition-colors overflow-x-hidden w-full max-w-full">
       
-      {/* Top Header with Brand, 2 Core Tabs (إزالة الخلفية & توليد الخلفيات), and Drawer Trigger */}
+      {/* Top Header with Brand, 4 Main Workflow Tabs, and Drawer Trigger */}
       <Header
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        activeTab={activeTab as any}
+        setActiveTab={setActiveTab as any}
         isDark={isDark}
         toggleDarkMode={toggleDarkMode}
         isArabic={isArabic}
         toggleLanguage={toggleLanguage}
         onOpenDrawer={() => setIsDrawerOpen(true)}
-        onNewBatchClick={() => {
-          setActiveTab('removal');
-          const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-          if (fileInput) fileInput.click();
-        }}
-        errorCount={errorLogs.length}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         
-        {/* Tab 1: إزالة الخلفية */}
+        {/* 1. عزل */}
         {activeTab === 'removal' && (
           <StudioWorkspace
             images={images}
@@ -437,7 +432,16 @@ export default function App() {
           />
         )}
 
-        {/* Tab 2: توليد الخلفيات الذكية (Background Generator) */}
+        {/* 2. تحسين */}
+        {activeTab === 'supir' && (
+          <SupirEnhancer
+            images={images}
+            isArabic={isArabic}
+            onAddImageToLibrary={handleAddImageFromGenerator}
+          />
+        )}
+
+        {/* 3. مشاهد */}
         {activeTab === 'generator' && (
           <BackgroundGenerator
             images={images}
@@ -448,7 +452,16 @@ export default function App() {
           />
         )}
 
-        {/* Secondary Views accessed via Sidebar Drawer */}
+        {/* 4. لوحتي */}
+        {activeTab === 'storyboard' && (
+          <StoryboardWorkspace
+            images={images}
+            isArabic={isArabic}
+            onAddImageToLibrary={handleAddImageFromGenerator}
+          />
+        )}
+
+        {/* Secondary Views accessed via direct link if needed */}
         {activeTab === 'reports' && (
           <ReportsView
             images={images}
@@ -466,55 +479,26 @@ export default function App() {
             isArabic={isArabic}
           />
         )}
-
-        {activeTab === 'errors' && (
-          <ErrorLogsView
-            errorLogs={errorLogs}
-            onRetryAll={handleRetryAllErrors}
-            onClearLogs={() => setErrorLogs([])}
-            isArabic={isArabic}
-          />
-        )}
       </main>
 
-      {/* Footer - Minimalist & Refined per user request */}
-      <footer className="border-t border-slate-200 dark:border-slate-800/80 bg-white dark:bg-[#0A1324] py-4 px-4 text-xs text-slate-500 dark:text-slate-400 mt-auto">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-start">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-[#0F2952] dark:text-amber-400">
-              {isArabic ? 'ستوديو الشمساوية' : 'AlShams Craft Studio'}
-            </span>
-            <span>·</span>
-            <span>{isArabic ? 'الشمس كرافت · عزل وتوليد الصور الذكي' : 'AlShams Craft · All Rights Reserved'}</span>
-          </div>
-
-          <div className="flex items-center gap-3 text-[11px] text-slate-400">
-            <button
-              onClick={() => setIsDrawerOpen(true)}
-              className="hover:text-amber-500 transition-colors cursor-pointer"
-            >
-              {isArabic ? 'لوحة التحكم والقائمة الجانبية' : 'Studio Drawer'}
-            </button>
-            <span>·</span>
-            <span className="font-mono text-slate-400 dark:text-slate-500">v2.4.0</span>
-          </div>
+      {/* Footer - Single clean line per user request */}
+      <footer className="border-t border-slate-200 dark:border-slate-800/80 bg-white dark:bg-[#0A1324] py-3.5 px-4 text-xs text-slate-500 dark:text-slate-400 mt-auto">
+        <div className="max-w-7xl mx-auto flex items-center justify-center text-center">
+          <p className="font-semibold text-slate-700 dark:text-slate-300">
+            {isArabic ? 'ستوديو الشمساوية · الشمس كرافت © 2026' : 'AlShams Craft Studio © 2026'}
+          </p>
         </div>
       </footer>
 
-      {/* Slide-Over Sidebar Drawer housing Reports, Analytics, Errors, and 24/7 Support */}
+      {/* Slide-Over Sidebar Drawer */}
       <SidebarDrawer
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        settings={settings}
-        updateSettings={updateSettings}
-        errorCount={errorLogs.length}
-        stats={stats}
         isArabic={isArabic}
         toggleLanguage={toggleLanguage}
+        isDark={isDark}
+        toggleDarkMode={toggleDarkMode}
         onOpenGuide={() => setIsGuideOpen(true)}
-        onOpenUpdates={() => setIsUpdatesOpen(true)}
       />
 
       {/* Modals */}

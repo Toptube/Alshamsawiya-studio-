@@ -5,6 +5,7 @@ import {
   Palette, Cpu, ShieldCheck, Sparkles, Image as ImageIcon,
   Wand2
 } from 'lucide-react';
+import { SmartGuidanceTooltip } from './SmartGuidanceTooltip';
 import { ProcessedImage, RembgSettings, RembgModel } from '../types';
 
 interface StudioWorkspaceProps {
@@ -70,27 +71,46 @@ export const StudioWorkspace: React.FC<StudioWorkspaceProps> = ({
   const errorCount = images.filter((i) => i.status === 'error').length;
 
   return (
-    <div className="space-y-6">
-      
-      {/* Brand Hero Sub-Banner with Trust & Lead Info */}
-      <div className="relative rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-gradient-to-r from-[#0F2952]/90 via-[#16386D]/85 to-[#0B1B36]/90 p-5 sm:p-6 text-white shadow-sm">
-        <div className="space-y-1.5 max-w-3xl">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-              {isArabic ? 'محرك الشمساوية الذكي v2.4' : 'AlShams Neural Engine v2.4'}
-            </span>
-            <span className="text-xs text-slate-300">
-              {isArabic ? 'الشمس كرافت · AlShams Craft' : 'AlShams Craft Brand'}
-            </span>
+    <div className="space-y-4">
+      {/* 5-Second Dismissible Smart Guidance Tooltip */}
+      <SmartGuidanceTooltip
+        pageKey="removal"
+        messageAr="قص منتجك بضغطة واحدة واجعله جاهزاً للعرض."
+        messageEn="Isolate your craft in one click and prepare it for presentation."
+        isArabic={isArabic}
+      />
+
+      {/* Clean Studio Banner */}
+      <div className="relative rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-gradient-to-r from-[#0F2952] via-[#16386D] to-[#0F2952] p-4 sm:p-5 text-white shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="space-y-1 max-w-2xl">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-[#D48B16]/20 text-amber-300 border border-[#D48B16]/30">
+                {isArabic ? 'عزل الخلفية' : 'Isolate Subject'}
+              </span>
+              <span className="text-xs text-slate-300">
+                {isArabic ? 'ستوديو الشمساوية · الشمس كرافت' : 'AlShams Craft Studio'}
+              </span>
+            </div>
+            <h1 className="text-lg sm:text-xl font-black tracking-tight text-white">
+              {isArabic ? 'عزل خلفية الورشة والموبايل بضغطة واحدة' : 'One-Click Workshop Background Isolation'}
+            </h1>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              {isArabic
+                ? 'استخراج منتجاتك اليدوية بدقة فائقة مع تنقية الحواف والنسيج، وحفظ النتائج الشفافة بجودة الكتالوجات.'
+                : 'Extract handmade crafts with high edge precision, fiber preservation, and high-res transparent output.'}
+            </p>
           </div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
-            {isArabic ? 'ستوديو الشمساوية لإزالة وعزل الخلفيات الذكي' : 'AlShams Craft Background Removal Studio'}
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-            {isArabic
-              ? 'عزل احترافي فائق الدقة مع إمكانية معالجة الدفعات، ضبط حساسية الحواف والشعر، حفظ النتائج التلقائي، وتصدير التقارير وسكربتات الأتمتة.'
-              : 'High-precision AI background removal with batch processing, adjustable alpha edge thresholds, auto-save, CSV reports, and automation scripting.'}
-          </p>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-[#D48B16] hover:bg-amber-400 text-slate-950 transition-colors shadow-xs cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{isArabic ? 'رفع صورة' : 'Upload Image'}</span>
+            </button>
+          </div>
         </div>
       </div>
 

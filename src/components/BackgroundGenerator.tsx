@@ -9,6 +9,7 @@ import {
 import { ProcessedImage, StudioPresetTheme, RembgSettings } from '../types';
 import { processImageUnified } from '../services/api';
 import { soundEffects } from '../utils/audio';
+import { SmartGuidanceTooltip } from './SmartGuidanceTooltip';
 
 // Expanded Rich Color Tones & Gradients (16 Studio Themes + Custom)
 export const EXTENDED_STUDIO_THEMES: (StudioPresetTheme & { gradientType?: 'linear' | 'radial'; colors?: string[] })[] = [
@@ -266,31 +267,33 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
   const [edgeStrokeWidth, setEdgeStrokeWidth] = useState<number>(3); // 1px to 10px
   const [edgeStrokeGlow, setEdgeStrokeGlow] = useState<number>(4); // 0px to 15px glow
 
-  // Contact ground shadow states
+  // Contact ground shadow states (الظل الواقعي)
   const [hasShadow, setHasShadow] = useState<boolean>(true);
   const [shadowOpacity, setShadowOpacity] = useState<number>(selectedTheme.defaultShadowOpacity);
   const [shadowBlur, setShadowBlur] = useState<number>(18);
+  const [shadowAngle, setShadowAngle] = useState<number>(15); // -75° to +75°
   const [shadowSpreadY, setShadowSpreadY] = useState<number>(14);
   const [shadowTone, setShadowTone] = useState<'neutral' | 'warm' | 'cool'>('neutral');
 
-  // Background effects & lighting
+  // Background effects & lighting (السطوع، الدفء، والتباين)
   const [bgBlur, setBgBlur] = useState<number>(3); // depth of field bokeh blur
-  const [bgBrightness, setBgBrightness] = useState<number>(100); // 60 to 140
-  const [bgContrast, setBgContrast] = useState<number>(100); // 70 to 140
+  const [bgBrightness, setBgBrightness] = useState<number>(100); // 50 to 150
+  const [warmth, setWarmth] = useState<number>(0); // -30 (cool daylight) to +30 (warm studio)
+  const [bgContrast, setBgContrast] = useState<number>(100); // 50 to 150
 
   // Collapsible Accordion Cards State ("مربعات حوارية")
   const [openPanels, setOpenPanels] = useState<{
+    lighting: boolean;
+    shadow: boolean;
     scenes: boolean;
     transform: boolean;
     edges: boolean;
-    shadow: boolean;
-    lighting: boolean;
   }>({
+    lighting: true,
+    shadow: true,
     scenes: true,
-    transform: true,
-    edges: true,
-    shadow: false,
-    lighting: false,
+    transform: false,
+    edges: false,
   });
 
   const togglePanel = (panel: keyof typeof openPanels) => {
@@ -385,9 +388,11 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
     canvas.width = width;
     canvas.height = height;
 
-    // 1. Draw Background Scene & Gradients
+    // 1. Draw Background Scene & Gradients with Warmth & Studio Lighting
     ctx.save();
-    ctx.filter = `blur(${bgBlur}px) brightness(${bgBrightness}%) contrast(${bgContrast}%)`;
+    const sepiaVal = warmth > 0 ? warmth * 0.7 : 0;
+    const hueVal = warmth < 0 ? warmth * 0.6 : 0;
+    ctx.filter = `blur(${bgBlur}px) brightness(${bgBrightness}%) contrast(${bgContrast}%) sepia(${sepiaVal}%) hue-rotate(${hueVal}deg)`;
 
     if (bgMode === 'solid') {
       ctx.fillStyle = customSolidColor;
@@ -548,7 +553,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
         const centerX = (width / 2) + posX;
         const centerY = (height / 2) + posY;
 
-        // Draw shadow first (if enabled)
+        // Draw realistic contact shadow first (if enabled)
         if (hasShadow) {
           ctx.save();
           // Shadow tone color
@@ -556,12 +561,17 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
           if (shadowTone === 'warm') shadowRgb = '69, 26, 3';
           if (shadowTone === 'cool') shadowRgb = '15, 23, 42';
 
-          ctx.translate(centerX, centerY + (targetH / 2) - 8);
-          ctx.scale(1, 0.35); // flatten to ground plane
+          const angleRad = (shadowAngle * Math.PI) / 180;
+          const shadowOffsetX = Math.sin(angleRad) * 35;
+          const shadowOffsetY = Math.cos(angleRad) * 12;
+
+          ctx.translate(centerX + shadowOffsetX, centerY + (targetH / 2) - 8 + shadowOffsetY);
+          ctx.rotate((shadowAngle * 0.25 * Math.PI) / 180);
+          ctx.scale(1, 0.28); // flatten to realistic horizontal ground plane
           ctx.filter = `blur(${shadowBlur}px)`;
           ctx.fillStyle = `rgba(${shadowRgb}, ${shadowOpacity})`;
           ctx.beginPath();
-          ctx.arc(0, shadowSpreadY, (targetW / 2) * 0.85, 0, Math.PI * 2);
+          ctx.arc(0, shadowSpreadY, (targetW / 2) * 0.9, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
         }
@@ -626,10 +636,12 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
     hasShadow,
     shadowOpacity,
     shadowBlur,
+    shadowAngle,
     shadowSpreadY,
     shadowTone,
     bgBlur,
     bgBrightness,
+    warmth,
     bgContrast
   ]);
 
@@ -654,27 +666,34 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
   const completedImagesList = images.filter((i) => i.status === 'completed' && i.processedUrl);
 
   return (
-    <div className="space-y-6">
-      
-      {/* Top Banner */}
-      <div className="bg-gradient-to-r from-[#0F2952] via-[#1A3D73] to-[#0B1528] rounded-2xl p-4 sm:p-5 text-white border border-slate-700 shadow-sm">
+    <div className="space-y-4">
+      {/* 5-Second Dismissible Smart Guidance Tooltip */}
+      <SmartGuidanceTooltip
+        pageKey="generator"
+        messageAr="ضع منتجك في بيئة ديكور واقعية تناسب نوعه (أريكة، حائط، شرفة)."
+        messageEn="Place your product in a realistic decor setting (couch, wall, balcony)."
+        isArabic={isArabic}
+      />
+
+      {/* Top Banner: مشاهد */}
+      <div className="bg-gradient-to-r from-[#0F2952] via-[#16386D] to-[#0F2952] rounded-2xl p-4 sm:p-5 text-white border border-slate-700 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-500/25 text-amber-300 border border-amber-500/30">
-                {isArabic ? 'استوديو توليد الخلفيات الذكية' : 'AI Background Studio'}
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-[#D48B16]/20 text-amber-300 border border-[#D48B16]/30">
+                {isArabic ? 'مشاهد واستوديو الديكور' : 'Decor Scene Studio'}
               </span>
               <span className="text-xs text-slate-300">
                 {isArabic ? 'ستوديو الشمساوية' : 'AlShams Craft'}
               </span>
             </div>
             <h1 className="text-lg sm:text-xl font-black text-white">
-              {isArabic ? 'مولّد الخلفيات الإعلانية وضبط المشاهد' : 'AI Scene Studio & Background Generator'}
+              {isArabic ? 'مشاهد واستوديو الديكور الواقعي للمنتجات' : 'Commercial Decor Scene Studio'}
             </h1>
             <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
               {isArabic
-                ? 'مربع المعاينة ثابت بالكامل مع إمكانية دوران المنتج 360 درجة، وتحديد الحواف، وتدرجات لونية متنوعة، وتحكم انسيابي في الخيارات.'
-                : 'Pinned preview viewport with 360° rotation, edge contour tuning, rich gradients, and fluid collapsible control cards.'}
+                ? 'معاينة ثابتة أمام العين، ضبط إضاءة الاستوديو والظلال الواقعية لمنع عوم المنتج، مع باليتات لونية ودوران 360 درجة.'
+                : 'Pinned preview viewport with realistic contact shadow, studio lighting & warmth, smart palettes and 360° rotation.'}
             </p>
           </div>
 
@@ -1400,8 +1419,29 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                       />
                     </div>
 
-                    {/* Shadow Blur & Softness */}
+                    {/* Shadow Angle */}
                     <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-slate-500">
+                        <span>{isArabic ? 'زاوية الظل (Angle)' : 'Shadow Angle'}</span>
+                        <span className="font-mono text-amber-500 font-bold">{shadowAngle}°</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="-75"
+                        max="75"
+                        value={shadowAngle}
+                        onChange={(e) => setShadowAngle(Number(e.target.value))}
+                        className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-400">
+                        <span>-75° ({isArabic ? 'يسار' : 'Left'})</span>
+                        <span>0° ({isArabic ? 'رأسي' : 'Direct'})</span>
+                        <span>+75° ({isArabic ? 'يمين' : 'Right'})</span>
+                      </div>
+                    </div>
+
+                    {/* Shadow Blur & Softness */}
+                    <div className="space-y-1 pt-1 border-t border-slate-100 dark:border-slate-800">
                       <div className="flex justify-between text-[11px] text-slate-500">
                         <span>{isArabic ? 'نعومة وانتشار الظل (Blur)' : 'Shadow Softness'}</span>
                         <span className="font-mono text-amber-500 font-bold">{shadowBlur}px</span>
@@ -1496,24 +1536,46 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                   </div>
                   <input
                     type="range"
-                    min="60"
-                    max="140"
+                    min="50"
+                    max="150"
                     value={bgBrightness}
                     onChange={(e) => setBgBrightness(Number(e.target.value))}
                     className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
                   />
                 </div>
 
+                {/* Warmth (الدفء) */}
+                <div className="space-y-1 pt-1 border-t border-slate-100 dark:border-slate-800">
+                  <div className="flex justify-between text-[11px] text-slate-500">
+                    <span>{isArabic ? 'دفء وحرارة الإضاءة' : 'Lighting Warmth'}</span>
+                    <span className="font-mono text-amber-500 font-bold">
+                      {warmth === 0 ? (isArabic ? 'محايد' : 'Neutral') : warmth > 0 ? `+${warmth} (ذهبي دافئ)` : `${warmth} (بارد نهاري)`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-30"
+                    max="30"
+                    value={warmth}
+                    onChange={(e) => setWarmth(Number(e.target.value))}
+                    className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-400">
+                    <span>{isArabic ? 'بارد' : 'Cool'}</span>
+                    <span>{isArabic ? 'دافئ ذهبي' : 'Warm Amber'}</span>
+                  </div>
+                </div>
+
                 {/* Contrast */}
-                <div className="space-y-1">
+                <div className="space-y-1 pt-1 border-t border-slate-100 dark:border-slate-800">
                   <div className="flex justify-between text-[11px] text-slate-500">
                     <span>{isArabic ? 'تباين المشهد (Contrast)' : 'Scene Contrast'}</span>
                     <span className="font-mono text-amber-500 font-bold">{bgContrast}%</span>
                   </div>
                   <input
                     type="range"
-                    min="70"
-                    max="140"
+                    min="50"
+                    max="150"
                     value={bgContrast}
                     onChange={(e) => setBgContrast(Number(e.target.value))}
                     className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"

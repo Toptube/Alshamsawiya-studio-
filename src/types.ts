@@ -15,7 +15,7 @@ export interface ProcessedImage {
   error?: string | null;
   modelUsed: string;
   timestamp: string;
-  customPath: string;
+  customPath?: string;
   outputPath?: string;
   history: string[]; // snapshot urls for undo
   generatedBackgroundUrl?: string | null;

@@ -4,7 +4,7 @@
  * Guarantees 100% offline functionality without external dependencies.
  */
 
-import { RembgSettings } from '../types';
+import { RembgSettings } from '../../types';
 
 export async function processImageOffline(
   imageUrl: string,

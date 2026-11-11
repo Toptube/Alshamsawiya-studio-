@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./shared/ui/design-tokens.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 

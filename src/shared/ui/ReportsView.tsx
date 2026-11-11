@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { 
   FileSpreadsheet, Download, Archive, Code2, Search, 
-  Filter, CheckCircle2, AlertCircle, Clock, ExternalLink, 
-  Trash2, RefreshCw
+  CheckCircle2, AlertCircle, Clock,
+  Trash2
 } from 'lucide-react';
-import { ProcessedImage, RembgSettings } from '../types';
-import { exportReportToCSV, downloadAllAsZip, downloadPythonScript } from '../services/api';
+import { ProcessedImage, RembgSettings } from '../../types';
+import { exportReportToCSV, downloadAllAsZip, downloadPythonScript } from '../lib/api';
 
 interface ReportsViewProps {
   images: ProcessedImage[];

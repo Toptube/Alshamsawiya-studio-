@@ -1,9 +1,9 @@
 import React from 'react';
 import { 
-  BarChart3, CheckCircle2, Clock, HardDrive, 
-  Sparkles, TrendingUp, Cloud, Shield, Award, Users
+  BarChart3, CheckCircle2, Clock,
+  Sparkles, TrendingUp, Cloud, Shield
 } from 'lucide-react';
-import { StudioStats, ProcessedImage } from '../types';
+import { StudioStats, ProcessedImage } from '../../types';
 
 interface AnalyticsViewProps {
   stats: StudioStats;
@@ -24,8 +24,6 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   // Approximate hours saved vs manual Photoshop pen-tool (assumed ~10 minutes per image)
   const estimatedHoursSaved = ((completedImages.length * 10) / 60).toFixed(1);
 
-  // Total MB processed
-  const totalMb = (stats.totalOriginalBytes / (1024 * 1024)).toFixed(2);
   const successRate = stats.totalProcessed > 0
     ? Math.round((stats.successfulCount / stats.totalProcessed) * 100)
     : 100;

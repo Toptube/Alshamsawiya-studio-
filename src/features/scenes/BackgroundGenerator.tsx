@@ -1,18 +1,25 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  Wand2, Upload, Download, Eye, Sparkles, 
-  Sliders, Layers, Move, Palette, SunMedium, Compass,
-  CheckCircle2, RotateCcw, ArrowRightLeft, Image as ImageIcon,
-  ChevronDown, ChevronUp, Maximize2, Shield, CircleDot,
-  Contrast, Sun, RefreshCw
+  Wand2, Upload, Download, Palette, SunMedium, Compass, Send,
+  RotateCcw, ArrowRightLeft,
+  ChevronDown, ChevronUp, Shield, Sun
 } from 'lucide-react';
-import { ProcessedImage, StudioPresetTheme, RembgSettings } from '../types';
-import { processImageUnified } from '../services/api';
-import { soundEffects } from '../utils/audio';
-import { SmartGuidanceTooltip } from './SmartGuidanceTooltip';
+import { ProcessedImage, StudioPresetTheme, RembgSettings } from '../../types';
+import { processImageUnified } from '../../shared/lib/api';
+import { soundEffects } from '../../shared/lib/audio';
+import { SCENES_BACKGROUNDS, SceneBackgroundCategory, SceneBackgroundPreset } from './scenesBackgrounds';
+import { processingQueue } from '../../shared/lib/processingQueue';
+import { SceneAdvisor } from './SceneAdvisor';
+import type { ProductType, ProductDescription } from '../../shared/lib/visionProvider';
 
 // Expanded Rich Color Tones & Gradients (16 Studio Themes + Custom)
-export const EXTENDED_STUDIO_THEMES: (StudioPresetTheme & { gradientType?: 'linear' | 'radial'; colors?: string[] })[] = [
+type StudioTheme = StudioPresetTheme & {
+  gradientType?: 'linear' | 'radial';
+  colors?: string[];
+  sceneBackground?: SceneBackgroundPreset;
+};
+
+const LEGACY_STUDIO_THEMES: StudioTheme[] = [
   // 1. Luxury & Royal
   {
     id: 'marble_luxury',
@@ -214,12 +221,131 @@ export const EXTENDED_STUDIO_THEMES: (StudioPresetTheme & { gradientType?: 'line
   }
 ];
 
+const SCENE_THEME_CATEGORY: Record<SceneBackgroundCategory, StudioPresetTheme['category']> = {
+  studio: 'studio',
+  wall: 'nature',
+  wood: 'nature',
+  gradient: 'modern',
+};
+
+export const EXTENDED_STUDIO_THEMES: StudioTheme[] = [
+  ...LEGACY_STUDIO_THEMES,
+  ...SCENES_BACKGROUNDS.map((preset): StudioTheme => ({
+    id: preset.id,
+    name: preset.label,
+    nameEn: preset.label,
+    description: preset.label,
+    category: SCENE_THEME_CATEGORY[preset.category],
+    prompt: preset.label,
+    previewBg: preset.background,
+    ambientColor: '#D48B16',
+    shadowColor: 'rgba(0, 0, 0, 0.45)',
+    defaultShadowOpacity: 0.45,
+    sceneBackground: preset,
+  })),
+];
+
+function drawScenePresetBackground(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  preset: SceneBackgroundPreset
+) {
+  const isRadial = preset.background.startsWith('radial-gradient');
+  const gradient = isRadial
+    ? ctx.createRadialGradient(width / 2, height * 0.38, 0, width / 2, height * 0.5, Math.max(width, height) * 0.75)
+    : ctx.createLinearGradient(0, 0, 0, height);
+  for (const [offset, color] of preset.colorStops) gradient.addColorStop(offset, color);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  if (preset.category === 'wall') {
+    ctx.fillStyle = 'rgba(45, 35, 25, 0.06)';
+    ctx.fillRect(0, height * 0.69, width, height * 0.008);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+    ctx.lineWidth = Math.max(1, width / 600);
+    for (let x = width * 0.12; x < width; x += width * 0.21) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height * 0.69);
+      ctx.stroke();
+    }
+  } else if (preset.texture === 'wood') {
+    ctx.strokeStyle = 'rgba(255, 240, 218, 0.14)';
+    ctx.lineWidth = Math.max(1, width / 540);
+    for (let y = height * 0.72; y < height; y += height * 0.025) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+  } else if (preset.texture === 'marble') {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(212, 139, 22, 0.42)';
+    ctx.lineWidth = Math.max(1, width / 500);
+    ctx.beginPath();
+    ctx.moveTo(width * 0.12, height * 0.1);
+    ctx.bezierCurveTo(width * 0.38, height * 0.33, width * 0.26, height * 0.56, width * 0.62, height * 0.76);
+    ctx.bezierCurveTo(width * 0.73, height * 0.82, width * 0.8, height * 0.9, width * 0.93, height * 0.94);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 interface BackgroundGeneratorProps {
   images: ProcessedImage[];
   selectedInitialImage?: ProcessedImage | null;
   settings: RembgSettings;
   onAddImageToLibrary: (image: ProcessedImage) => void;
   isArabic: boolean;
+  initialSceneState?: Partial<SceneProjectState>;
+  generatedScenes?: Array<{
+    id: string;
+    title: string;
+    aspectRatio: string;
+    position: string;
+    imageUrl: string | null;
+  }>;
+  advisorImageUrl?: string | null;
+  advisorProductType?: ProductType;
+  advisorDescription?: string;
+  onAdvisorTypeChange?: (type: ProductType) => void;
+  onAdvisorDescriptionChange?: (description: ProductDescription) => void;
+  onAdvisorSceneChoose?: (scene: { id: string; title: string; imageUrl: string; prompt: string; type: ProductType }) => void;
+  onSceneStateChange?: (state: SceneProjectState) => void;
+  onActiveImageChange?: (id: string) => void;
+}
+
+export interface SceneProjectState {
+  bgMode: 'preset' | 'customGradient' | 'solid';
+  quickBackdrop: 'clean' | 'warmWall' | 'rusticWood' | null;
+  selectedThemeId: string;
+  themeCategory: 'all' | 'studio' | 'wall' | 'wood' | 'gradient' | 'classic';
+  aspectRatio: '1:1' | '4:5' | '9:16' | '16:9';
+  customGradColor1: string;
+  customGradColor2: string;
+  customGradAngle: number;
+  customGradType: 'linear' | 'radial';
+  customSolidColor: string;
+  scale: number;
+  posX: number;
+  posY: number;
+  rotation: number;
+  isFlippedH: boolean;
+  edgeFeathering: number;
+  edgeExpansion: number;
+  edgeStrokeEnabled: boolean;
+  edgeStrokeColor: string;
+  edgeStrokeWidth: number;
+  hasShadow: boolean;
+  shadowOpacity: number;
+  shadowBlur: number;
+  shadowAngle: number;
+  shadowTone: 'neutral' | 'warm' | 'cool';
+  bgBlur: number;
+  bgBrightness: number;
+  warmth: number;
+  bgContrast: number;
 }
 
 export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
@@ -227,7 +353,17 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
   selectedInitialImage,
   settings,
   onAddImageToLibrary,
-  isArabic
+  isArabic,
+  initialSceneState,
+  generatedScenes = [],
+  advisorImageUrl,
+  advisorProductType = 'other',
+  advisorDescription = '',
+  onAdvisorTypeChange,
+  onAdvisorDescriptionChange,
+  onAdvisorSceneChoose,
+  onSceneStateChange,
+  onActiveImageChange
 }) => {
   // Current subject image
   const [subjectImage, setSubjectImage] = useState<ProcessedImage | null>(() => {
@@ -239,47 +375,54 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
   const [isIsolating, setIsIsolating] = useState(false);
 
   // Background Theme & Custom Gradient
-  const [bgMode, setBgMode] = useState<'preset' | 'customGradient' | 'solid'>('preset');
-  const [selectedTheme, setSelectedTheme] = useState<StudioPresetTheme>(EXTENDED_STUDIO_THEMES[0]);
-  const [themeCategory, setThemeCategory] = useState<'all' | 'luxury' | 'nature' | 'studio' | 'modern'>('all');
+  const [bgMode, setBgMode] = useState<'preset' | 'customGradient' | 'solid'>(initialSceneState?.bgMode || 'preset');
+  const [quickBackdrop, setQuickBackdrop] = useState<'clean' | 'warmWall' | 'rusticWood' | null>(initialSceneState?.quickBackdrop || null);
+  const [selectedTheme, setSelectedTheme] = useState<StudioTheme>(
+    EXTENDED_STUDIO_THEMES.find((theme) => theme.id === initialSceneState?.selectedThemeId) || EXTENDED_STUDIO_THEMES[0]
+  );
+  const [themeCategory, setThemeCategory] = useState<'all' | 'studio' | 'wall' | 'wood' | 'gradient' | 'classic'>(initialSceneState?.themeCategory || 'all');
+  const [aspectRatio, setAspectRatio] = useState<'1:1' | '4:5' | '9:16' | '16:9'>(initialSceneState?.aspectRatio || '1:1');
   
   // Custom Gradient Controls
-  const [customGradColor1, setCustomGradColor1] = useState('#0F2952'); // AlShams Navy
-  const [customGradColor2, setCustomGradColor2] = useState('#D48B16'); // AlShams Gold
-  const [customGradAngle, setCustomGradAngle] = useState(135);
-  const [customGradType, setCustomGradType] = useState<'linear' | 'radial'>('radial');
+  const [customGradColor1, setCustomGradColor1] = useState(initialSceneState?.customGradColor1 || '#0F2952'); // AlShams Navy
+  const [customGradColor2, setCustomGradColor2] = useState(initialSceneState?.customGradColor2 || '#D48B16'); // AlShams Gold
+  const [customGradAngle, setCustomGradAngle] = useState(initialSceneState?.customGradAngle ?? 135);
+  const [customGradType, setCustomGradType] = useState<'linear' | 'radial'>(initialSceneState?.customGradType || 'radial');
   
   // Solid color mode
-  const [customSolidColor, setCustomSolidColor] = useState('#0F2952');
+  const [customSolidColor, setCustomSolidColor] = useState(initialSceneState?.customSolidColor || '#0F2952');
 
   // Transformation states (Scale, Position, 360° Rotation, Flip)
-  const [scale, setScale] = useState<number>(85); // 30% to 150%
-  const [posX, setPosX] = useState<number>(0); // -150 to +150
-  const [posY, setPosY] = useState<number>(20); // -150 to +150
-  const [rotation, setRotation] = useState<number>(0); // 0 to 360 deg
-  const [isFlippedH, setIsFlippedH] = useState<boolean>(false);
+  const [scale, setScale] = useState<number>(initialSceneState?.scale ?? 85); // 30% to 150%
+  const [posX, setPosX] = useState<number>(initialSceneState?.posX ?? 0); // -150 to +150
+  const [posY, setPosY] = useState<number>(initialSceneState?.posY ?? 20); // -150 to +150
+  const [rotation, setRotation] = useState<number>(initialSceneState?.rotation ?? 0); // 0 to 360 deg
+  const [isFlippedH, setIsFlippedH] = useState<boolean>(initialSceneState?.isFlippedH ?? false);
 
   // Edge Precision & Contours (تحديد الحواف / تنعيم / جعلها حادة / تقليص / زيادة)
-  const [edgeFeathering, setEdgeFeathering] = useState<number>(1); // 0px (ultra sharp) to 15px (soft feather)
-  const [edgeExpansion, setEdgeExpansion] = useState<number>(0); // -8px (erode) to +8px (expand)
-  const [edgeStrokeEnabled, setEdgeStrokeEnabled] = useState<boolean>(false);
-  const [edgeStrokeColor, setEdgeStrokeColor] = useState<string>('#FFFFFF');
-  const [edgeStrokeWidth, setEdgeStrokeWidth] = useState<number>(3); // 1px to 10px
-  const [edgeStrokeGlow, setEdgeStrokeGlow] = useState<number>(4); // 0px to 15px glow
+  const [edgeFeathering, setEdgeFeathering] = useState<number>(initialSceneState?.edgeFeathering ?? 1); // 0px (ultra sharp) to 15px (soft feather)
+  const [edgeExpansion, setEdgeExpansion] = useState<number>(initialSceneState?.edgeExpansion ?? 0); // -8px (erode) to +8px (expand)
+  const [edgeStrokeEnabled, setEdgeStrokeEnabled] = useState<boolean>(initialSceneState?.edgeStrokeEnabled ?? false);
+  const [edgeStrokeColor, setEdgeStrokeColor] = useState<string>(initialSceneState?.edgeStrokeColor || '#FFFFFF');
+  const [edgeStrokeWidth, setEdgeStrokeWidth] = useState<number>(initialSceneState?.edgeStrokeWidth ?? 3); // 1px to 10px
+  const edgeStrokeGlow = 4;
 
   // Contact ground shadow states (الظل الواقعي)
-  const [hasShadow, setHasShadow] = useState<boolean>(true);
-  const [shadowOpacity, setShadowOpacity] = useState<number>(selectedTheme.defaultShadowOpacity);
-  const [shadowBlur, setShadowBlur] = useState<number>(18);
-  const [shadowAngle, setShadowAngle] = useState<number>(15); // -75° to +75°
-  const [shadowSpreadY, setShadowSpreadY] = useState<number>(14);
-  const [shadowTone, setShadowTone] = useState<'neutral' | 'warm' | 'cool'>('neutral');
+  const [hasShadow, setHasShadow] = useState<boolean>(initialSceneState?.hasShadow ?? true);
+  const [shadowOpacity, setShadowOpacity] = useState<number>(initialSceneState?.shadowOpacity ?? 0.45);
+  const [shadowBlur, setShadowBlur] = useState<number>(initialSceneState?.shadowBlur ?? 15);
+  const [shadowAngle, setShadowAngle] = useState<number>(initialSceneState?.shadowAngle ?? 25);
+  const shadowSpreadY = 4;
+  const [isSceneReady, setIsSceneReady] = useState(false);
+  const [sceneMessage, setSceneMessage] = useState<string | null>(null);
+  const [previewedAutoSceneId, setPreviewedAutoSceneId] = useState<string | null>(null);
+  const [shadowTone, setShadowTone] = useState<'neutral' | 'warm' | 'cool'>(initialSceneState?.shadowTone || 'neutral');
 
   // Background effects & lighting (السطوع، الدفء، والتباين)
-  const [bgBlur, setBgBlur] = useState<number>(3); // depth of field bokeh blur
-  const [bgBrightness, setBgBrightness] = useState<number>(100); // 50 to 150
-  const [warmth, setWarmth] = useState<number>(0); // -30 (cool daylight) to +30 (warm studio)
-  const [bgContrast, setBgContrast] = useState<number>(100); // 50 to 150
+  const [bgBlur, setBgBlur] = useState<number>(initialSceneState?.bgBlur ?? 3); // depth of field bokeh blur
+  const [bgBrightness, setBgBrightness] = useState<number>(initialSceneState?.bgBrightness ?? 100); // 50 to 150
+  const [warmth, setWarmth] = useState<number>(initialSceneState?.warmth ?? 0); // -30 (cool daylight) to +30 (warm studio)
+  const [bgContrast, setBgContrast] = useState<number>(initialSceneState?.bgContrast ?? 100); // 50 to 150
 
   // Collapsible Accordion Cards State ("مربعات حوارية")
   const [openPanels, setOpenPanels] = useState<{
@@ -303,9 +446,55 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewedAutoScene = generatedScenes.find((scene) => scene.id === previewedAutoSceneId);
+
+  useEffect(() => {
+    if (subjectImage) onActiveImageChange?.(subjectImage.id);
+  }, [subjectImage?.id, onActiveImageChange]);
+
+  useEffect(() => {
+    onSceneStateChange?.({
+      bgMode,
+      quickBackdrop,
+      selectedThemeId: selectedTheme.id,
+      themeCategory,
+      aspectRatio,
+      customGradColor1,
+      customGradColor2,
+      customGradAngle,
+      customGradType,
+      customSolidColor,
+      scale,
+      posX,
+      posY,
+      rotation,
+      isFlippedH,
+      edgeFeathering,
+      edgeExpansion,
+      edgeStrokeEnabled,
+      edgeStrokeColor,
+      edgeStrokeWidth,
+      hasShadow,
+      shadowOpacity,
+      shadowBlur,
+      shadowAngle,
+      shadowTone,
+      bgBlur,
+      bgBrightness,
+      warmth,
+      bgContrast
+    });
+  }, [
+    onSceneStateChange, bgMode, quickBackdrop, selectedTheme, themeCategory, aspectRatio,
+    customGradColor1, customGradColor2, customGradAngle, customGradType, customSolidColor,
+    scale, posX, posY, rotation, isFlippedH, edgeFeathering, edgeExpansion,
+    edgeStrokeEnabled, edgeStrokeColor, edgeStrokeWidth, hasShadow, shadowOpacity,
+    shadowBlur, shadowAngle, shadowTone, bgBlur, bgBrightness, warmth, bgContrast
+  ]);
 
   // Select Theme
-  const handleSelectTheme = (theme: StudioPresetTheme) => {
+  const handleSelectTheme = (theme: StudioTheme) => {
+    setQuickBackdrop(null);
     setBgMode('preset');
     setSelectedTheme(theme);
     setShadowOpacity(theme.defaultShadowOpacity);
@@ -343,7 +532,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
 
         setIsIsolating(true);
         try {
-          const res = await processImageUnified(newImgItem, settings);
+          const res = await processingQueue.run(() => processImageUnified(newImgItem, settings));
           const completedItem: ProcessedImage = {
             ...newImgItem,
             processedUrl: res.outputUrl,
@@ -378,15 +567,22 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
 
   // Render composite onto canvas
   useEffect(() => {
+    let cancelled = false;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const width = 800;
-    const height = 800;
+    const dimensions = {
+      '1:1': [1080, 1080],
+      '4:5': [1080, 1350],
+      '9:16': [1080, 1920],
+      '16:9': [1920, 1080],
+    } as const;
+    const [width, height] = dimensions[aspectRatio];
     canvas.width = width;
     canvas.height = height;
+    setIsSceneReady(false);
 
     // 1. Draw Background Scene & Gradients with Warmth & Studio Lighting
     ctx.save();
@@ -394,7 +590,46 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
     const hueVal = warmth < 0 ? warmth * 0.6 : 0;
     ctx.filter = `blur(${bgBlur}px) brightness(${bgBrightness}%) contrast(${bgContrast}%) sepia(${sepiaVal}%) hue-rotate(${hueVal}deg)`;
 
-    if (bgMode === 'solid') {
+    if (quickBackdrop === 'clean') {
+      const grad = ctx.createLinearGradient(0, 0, 0, height);
+      grad.addColorStop(0, '#FFFFFF');
+      grad.addColorStop(0.7, '#F1F5F9');
+      grad.addColorStop(1, '#CBD5E1');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+    } else if (quickBackdrop === 'warmWall') {
+      const grad = ctx.createLinearGradient(0, 0, 0, height);
+      grad.addColorStop(0, '#F5EBDD');
+      grad.addColorStop(0.67, '#E8D4B8');
+      grad.addColorStop(0.675, '#C7A77B');
+      grad.addColorStop(1, '#A98258');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = 'rgba(111, 78, 48, 0.08)';
+      ctx.lineWidth = Math.max(1, width / 540);
+      for (let x = width * 0.08; x < width; x += width * 0.19) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height * 0.67);
+        ctx.stroke();
+      }
+    } else if (quickBackdrop === 'rusticWood') {
+      const grad = ctx.createLinearGradient(0, 0, 0, height);
+      grad.addColorStop(0, '#A66D3F');
+      grad.addColorStop(0.65, '#754728');
+      grad.addColorStop(0.66, '#8A5A34');
+      grad.addColorStop(1, '#5C3823');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = 'rgba(255, 224, 180, 0.12)';
+      ctx.lineWidth = Math.max(1, width / 360);
+      for (let y = height * 0.68; y < height; y += height * 0.035) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+    } else if (bgMode === 'solid') {
       ctx.fillStyle = customSolidColor;
       ctx.fillRect(0, 0, width, height);
     } else if (bgMode === 'customGradient') {
@@ -418,7 +653,9 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
       }
     } else {
       // Preset themes
-      if (selectedTheme.id === 'marble_luxury') {
+      if (selectedTheme.sceneBackground) {
+        drawScenePresetBackground(ctx, width, height, selectedTheme.sceneBackground);
+      } else if (selectedTheme.id === 'marble_luxury') {
         const grad = ctx.createRadialGradient(width / 2, height * 0.42, 80, width / 2, height / 2, width);
         grad.addColorStop(0, '#1E293B');
         grad.addColorStop(0.65, '#0F172A');
@@ -544,6 +781,8 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.onload = () => {
+        void processingQueue.run(async () => {
+          if (cancelled) return;
         // Target dimensions
         const baseW = (width * 0.55 * (scale / 100));
         const aspect = img.height / img.width;
@@ -562,16 +801,21 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
           if (shadowTone === 'cool') shadowRgb = '15, 23, 42';
 
           const angleRad = (shadowAngle * Math.PI) / 180;
-          const shadowOffsetX = Math.sin(angleRad) * 35;
-          const shadowOffsetY = Math.cos(angleRad) * 12;
+          const shadowLength = Math.min(targetW, targetH) * 0.045;
+          const shadowOffsetX = Math.sin(angleRad) * shadowLength;
+          const shadowOffsetY = Math.cos(angleRad) * shadowLength;
+          const blurScale = Math.min(width, height) / 1080;
 
-          ctx.translate(centerX + shadowOffsetX, centerY + (targetH / 2) - 8 + shadowOffsetY);
+          ctx.translate(
+            centerX + shadowOffsetX,
+            centerY + targetH / 2 - Math.max(4, targetH * 0.035) + shadowOffsetY
+          );
           ctx.rotate((shadowAngle * 0.25 * Math.PI) / 180);
-          ctx.scale(1, 0.28); // flatten to realistic horizontal ground plane
-          ctx.filter = `blur(${shadowBlur}px)`;
+          ctx.scale(1, 0.16);
+          ctx.filter = `blur(${shadowBlur * blurScale}px)`;
           ctx.fillStyle = `rgba(${shadowRgb}, ${shadowOpacity})`;
           ctx.beginPath();
-          ctx.arc(0, shadowSpreadY, (targetW / 2) * 0.9, 0, Math.PI * 2);
+          ctx.ellipse(0, shadowSpreadY, targetW * 0.43, targetW * 0.22, 0, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
         }
@@ -610,12 +854,27 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
         // Draw the primary crisp subject
         ctx.drawImage(img, -targetW / 2, -targetH / 2, targetW, targetH);
         ctx.restore();
+        setIsSceneReady(true);
+        }).catch((error: unknown) => {
+          if (!cancelled) {
+            setIsSceneReady(false);
+            setSceneMessage(error instanceof Error ? error.message : (isArabic ? 'تعذر تجهيز المشهد.' : 'Could not render the scene.'));
+          }
+        });
+      };
+      img.onerror = () => {
+        setIsSceneReady(false);
+        setSceneMessage(isArabic ? 'تعذر تحميل صورة المنتج للمشهد.' : 'The product image could not be loaded.');
       };
       img.src = activeUrl;
+    } else {
+      setIsSceneReady(true);
     }
+    return () => { cancelled = true; };
   }, [
     subjectImage,
     bgMode,
+    quickBackdrop,
     selectedTheme,
     customGradColor1,
     customGradColor2,
@@ -637,18 +896,20 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
     shadowOpacity,
     shadowBlur,
     shadowAngle,
+    aspectRatio,
     shadowSpreadY,
     shadowTone,
     bgBlur,
     bgBrightness,
     warmth,
-    bgContrast
+    bgContrast,
+    isArabic
   ]);
 
   // Download high-res composition
   const handleDownloadComposition = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !isSceneReady) return;
     const url = canvas.toDataURL('image/png', 0.95);
     const a = document.createElement('a');
     a.href = url;
@@ -659,69 +920,67 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
     soundEffects.playCompletionChime();
   };
 
-  const filteredThemes = EXTENDED_STUDIO_THEMES.filter(
-    (t) => themeCategory === 'all' || t.category === themeCategory
-  );
+  const handleSendToStoryboard = () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !subjectImage || !isSceneReady) return;
+    const processedUrl = canvas.toDataURL('image/png');
+    const now = new Date().toISOString();
+    onAddImageToLibrary({
+      id: `scene-${Date.now()}`,
+      name: `${subjectImage.name} - ${aspectRatio}`,
+      originalUrl: subjectImage.originalUrl,
+      processedUrl,
+      status: 'completed',
+      originalWidth: subjectImage.originalWidth,
+      originalHeight: subjectImage.originalHeight,
+      outputWidth: canvas.width,
+      outputHeight: canvas.height,
+      originalSize: subjectImage.originalSize,
+      outputSize: Math.ceil(processedUrl.length * 0.75),
+      processingTimeMs: 0,
+      modelUsed: 'scene-composition',
+      timestamp: now,
+      history: [],
+    });
+    setSceneMessage(isArabic ? 'تم إرسال المشهد إلى لوحتي.' : 'Scene sent to Storyboard.');
+    soundEffects.playCompletionChime();
+  };
+
+  const filteredThemes = EXTENDED_STUDIO_THEMES.filter((theme) => {
+    if (themeCategory === 'all') return true;
+    if (themeCategory === 'classic') return !theme.sceneBackground;
+    return theme.sceneBackground?.category === themeCategory;
+  });
 
   const completedImagesList = images.filter((i) => i.status === 'completed' && i.processedUrl);
 
   return (
-    <div className="space-y-4">
-      {/* 5-Second Dismissible Smart Guidance Tooltip */}
-      <SmartGuidanceTooltip
-        pageKey="generator"
-        messageAr="ضع منتجك في بيئة ديكور واقعية تناسب نوعه (أريكة، حائط، شرفة)."
-        messageEn="Place your product in a realistic decor setting (couch, wall, balcony)."
-        isArabic={isArabic}
+    <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleUploadNewSubject}
       />
-
-      {/* Top Banner: مشاهد */}
-      <div className="bg-gradient-to-r from-[#0F2952] via-[#16386D] to-[#0F2952] rounded-2xl p-4 sm:p-5 text-white border border-slate-700 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-[#D48B16]/20 text-amber-300 border border-[#D48B16]/30">
-                {isArabic ? 'مشاهد واستوديو الديكور' : 'Decor Scene Studio'}
-              </span>
-              <span className="text-xs text-slate-300">
-                {isArabic ? 'ستوديو الشمساوية' : 'AlShams Craft'}
-              </span>
-            </div>
-            <h1 className="text-lg sm:text-xl font-black text-white">
-              {isArabic ? 'مشاهد واستوديو الديكور الواقعي للمنتجات' : 'Commercial Decor Scene Studio'}
-            </h1>
-            <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
-              {isArabic
-                ? 'معاينة ثابتة أمام العين، ضبط إضاءة الاستوديو والظلال الواقعية لمنع عوم المنتج، مع باليتات لونية ودوران 360 درجة.'
-                : 'Pinned preview viewport with realistic contact shadow, studio lighting & warmth, smart palettes and 360° rotation.'}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleUploadNewSubject}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isIsolating}
-              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shadow-xs"
-            >
-              <Upload className="w-3.5 h-3.5" />
-              <span>{isIsolating ? (isArabic ? 'جاري العزل الذكي...' : 'Isolating...') : (isArabic ? 'رفع منتج جديد' : 'Upload Product')}</span>
-            </button>
-          </div>
-        </div>
+      <div className="flex shrink-0 items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-[#0B1528]">
+        <h1 className="text-sm font-bold text-slate-900 dark:text-white">{isArabic ? 'مشاهد' : 'Scenes'}</h1>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isIsolating}
+          title={isArabic ? 'رفع منتج' : 'Upload product'}
+          aria-label={isArabic ? 'رفع منتج' : 'Upload product'}
+          className="rounded-lg p-2 text-[#0F2952] transition-colors hover:bg-slate-100 disabled:opacity-50 dark:text-amber-400 dark:hover:bg-slate-800"
+        >
+          <Upload className="h-4 w-4" />
+        </button>
       </div>
 
       {/* Main Studio Viewport Grid: Fixed/Sticky Canvas on Desktop and Mobile */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div className="min-h-0 flex-1 grid grid-cols-1 gap-3 overflow-y-auto lg:grid-cols-12 lg:grid-rows-1 lg:gap-4 lg:overflow-hidden">
         
         {/* Left Column: Fixed / Sticky Canvas Viewport (7 cols on lg) */}
-        <div className="lg:col-span-7 lg:sticky lg:top-20 z-20 space-y-4">
+        <div className="col-span-1 min-h-0 space-y-3 self-start lg:sticky lg:top-14 lg:z-10 lg:col-span-7">
           <div className="bg-white dark:bg-[#0B1528] rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-md space-y-3">
             
             {/* Viewport Control Strip */}
@@ -763,20 +1022,79 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                 {/* Download Button */}
                 <button
                   onClick={handleDownloadComposition}
+                  disabled={!isSceneReady}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shadow-xs"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>{isArabic ? 'تحميل HD' : 'Download'}</span>
+                  <span>{isArabic ? 'تحميل' : 'Download'}</span>
+                </button>
+                <button
+                  onClick={handleSendToStoryboard}
+                  disabled={!subjectImage || !isSceneReady}
+                  title={isArabic ? 'إرسال إلى لوحتي' : 'Send to Storyboard'}
+                  aria-label={isArabic ? 'إرسال إلى لوحتي' : 'Send to Storyboard'}
+                  className="flex items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-bold text-[#0F2952] transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-amber-400 dark:hover:bg-slate-800"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">{isArabic ? 'إلى لوحتي' : 'Storyboard'}</span>
                 </button>
               </div>
             </div>
 
+            <div className="grid grid-cols-4 gap-1.5">
+              {([
+                { ratio: '1:1', size: '1080 × 1080', label: isArabic ? 'مربع للمتجر' : 'Store square' },
+                { ratio: '4:5', size: '1080 × 1350', label: isArabic ? 'منشور' : 'Post' },
+                { ratio: '9:16', size: '1080 × 1920', label: isArabic ? 'قصة' : 'Story' },
+                { ratio: '16:9', size: '1920 × 1080', label: isArabic ? 'أفقي' : 'Landscape' },
+              ] as const).map(({ ratio, size, label }) => (
+                <button
+                  key={ratio}
+                  onClick={() => {
+                    setAspectRatio(ratio);
+                    setSceneMessage(null);
+                  }}
+                  aria-pressed={aspectRatio === ratio}
+                  aria-label={`${ratio} ${label} (${size})`}
+                  title={`${label} — ${size}`}
+                  className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition-colors ${
+                    aspectRatio === ratio
+                      ? 'border-[#D48B16] bg-[#D48B16]/10 text-[#D48B16]'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-500'
+                  }`}
+                >
+                  <span className="block">{ratio}</span>
+                  <span className="hidden text-[9px] font-normal sm:block">{size}</span>
+                </button>
+              ))}
+            </div>
+            {sceneMessage && (
+              <p role="status" className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                {sceneMessage}
+              </p>
+            )}
+
             {/* Canvas Display Viewport */}
-            <div className="relative w-full aspect-square max-h-[460px] sm:max-h-[520px] rounded-xl overflow-hidden bg-slate-950 flex items-center justify-center border border-slate-200 dark:border-slate-800 shadow-inner group">
+            <div
+              className="relative h-[42vh] min-h-[220px] max-h-[480px] w-full rounded-xl overflow-hidden bg-slate-950 flex items-center justify-center border border-slate-200 dark:border-slate-800 shadow-inner group"
+            >
               <canvas
                 ref={canvasRef}
-                className="w-full h-full object-contain"
+                className="max-w-full max-h-full object-contain"
+                style={{ width: 'auto', height: 'auto' }}
               />
+              {previewedAutoScene?.imageUrl && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white">
+                  <img src={previewedAutoScene.imageUrl} alt={previewedAutoScene.title} className="h-full w-full object-contain" />
+                  <button
+                    type="button"
+                    onClick={() => setPreviewedAutoSceneId(null)}
+                    className="absolute bottom-2 rounded-full bg-[#0F2952]/90 px-3 py-1.5 text-[11px] font-semibold text-white"
+                  >
+                    {isArabic ? 'العودة لمعاينة التعديل' : 'Back to editor preview'}
+                  </button>
+                </div>
+              )}
 
               {/* Theme Badge Overlay */}
               <div className="absolute top-3 start-3 px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur-xs text-[11px] font-semibold text-white pointer-events-none border border-white/10">
@@ -805,6 +1123,46 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                 </button>
               </div>
             </div>
+
+            {generatedScenes.length > 0 && (
+              <section className="rounded-xl border border-slate-200 bg-white p-2.5 dark:border-slate-800 dark:bg-[#0B1528]">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-bold text-[#0F2952] dark:text-white">
+                    {isArabic ? `مشاهد الاستوديو المحفوظة (${generatedScenes.length})` : `Saved studio scenes (${generatedScenes.length})`}
+                  </h3>
+                  {previewedAutoScene && (
+                    <span className="truncate text-[10px] text-slate-500">{previewedAutoScene.title}</span>
+                  )}
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {generatedScenes.filter((scene) => scene.imageUrl).map((scene) => (
+                    <button
+                      key={scene.id}
+                      type="button"
+                      onClick={() => setPreviewedAutoSceneId(scene.id)}
+                      aria-label={isArabic ? `معاينة ${scene.title}` : `Preview ${scene.title}`}
+                      className={`w-20 shrink-0 overflow-hidden rounded-lg border text-start ${previewedAutoSceneId === scene.id ? 'border-[#D48B16] ring-2 ring-[#D48B16]/30' : 'border-slate-200 dark:border-slate-700'}`}
+                    >
+                      <img src={scene.imageUrl || ''} alt="" className="h-14 w-full bg-slate-50 object-cover" />
+                      <span className="block truncate px-1.5 py-1 text-[9px] text-slate-600 dark:text-slate-300">{scene.aspectRatio} · {scene.position}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {onAdvisorTypeChange && onAdvisorDescriptionChange && onAdvisorSceneChoose && (
+              <SceneAdvisor
+                imageUrl={advisorImageUrl || (subjectImage?.processedUrl || subjectImage?.originalUrl || null)}
+                imageBlob={null}
+                selectedType={advisorProductType}
+                onTypeChange={onAdvisorTypeChange}
+                onDescriptionChange={onAdvisorDescriptionChange}
+                onChoose={onAdvisorSceneChoose}
+                initialDescription={advisorDescription}
+                isArabic={isArabic}
+              />
+            )}
 
             {/* Subject Selector Strip */}
             {completedImagesList.length > 0 && (
@@ -838,7 +1196,30 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
         </div>
 
         {/* Right Column: Fluid Collapsible Interactive Cards ("مربعات حوارية") (5 cols on lg) */}
-        <div className="lg:col-span-5 space-y-3.5">
+        <div className="col-span-1 min-h-0 space-y-3.5 pe-1 lg:col-span-5 lg:overflow-y-auto">
+          <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-[#0B1528]">
+            <p className="mb-2 text-sm font-bold text-[#0F2952] dark:text-white">{isArabic ? 'استوديو سريع' : 'Quick studio'}</p>
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                ['clean', 'استوديو أبيض'],
+                ['warmWall', 'حائط دافئ'],
+                ['rusticWood', 'خشب هادئ']
+              ] as const).map(([backdrop, label]) => (
+                <button key={backdrop} type="button" onClick={() => { setQuickBackdrop(backdrop); setBgMode('preset'); }} aria-pressed={quickBackdrop === backdrop} className={`min-h-11 rounded-lg border px-2 text-sm font-semibold ${quickBackdrop === backdrop ? 'border-[#D48B16] bg-[#D48B16]/10 text-[#0F2952] dark:text-amber-300' : 'border-slate-200 dark:border-slate-700'}`}>
+                  {isArabic ? label : backdrop}
+                </button>
+              ))}
+            </div>
+            <label className="mt-2 flex min-h-11 items-center gap-2 text-sm font-semibold">
+              <input type="checkbox" checked={hasShadow} onChange={(event) => setHasShadow(event.target.checked)} />
+              {isArabic ? 'ظل تلقائي ناعم' : 'Auto soft shadow'}
+            </label>
+          </div>
+          <details className="group rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#0B1528]">
+            <summary className="min-h-12 cursor-pointer px-4 py-3 text-sm font-bold text-[#0F2952] focus-visible:outline-[#D48B16] dark:text-white">
+              {isArabic ? 'إعدادات متقدمة' : 'Advanced settings'}
+            </summary>
+            <div className="space-y-3.5 p-2">
           
           {/* Card 1: تدرجات ألوان الخلفية والمشاهد الإعلانية */}
           <div className="bg-white dark:bg-[#0B1528] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden transition-all">
@@ -869,10 +1250,41 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
 
             {openPanels.scenes && (
               <div className="p-4 space-y-4 border-t border-slate-100 dark:border-slate-800">
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold text-slate-500">
+                    {isArabic ? 'خلفيات سريعة' : 'Quick backdrops'}
+                  </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { id: 'clean', label: isArabic ? 'استوديو أبيض' : 'Clean Studio', color: 'linear-gradient(#fff, #cbd5e1)' },
+                      { id: 'warmWall', label: isArabic ? 'جدار دافئ' : 'Warm Wall', color: 'linear-gradient(#f5ebdd 67%, #a98258 67%)' },
+                      { id: 'rusticWood', label: isArabic ? 'خشب هادئ' : 'Rustic Wood', color: 'linear-gradient(#a66d3f, #5c3823)' },
+                    ] as const).map((backdrop) => (
+                      <button
+                        key={backdrop.id}
+                        onClick={() => {
+                          setQuickBackdrop(backdrop.id);
+                          setSceneMessage(null);
+                          soundEffects.playClick();
+                        }}
+                        aria-pressed={quickBackdrop === backdrop.id}
+                        className={`rounded-lg border p-1.5 text-start text-[10px] font-semibold transition-colors ${
+                          quickBackdrop === backdrop.id
+                            ? 'border-amber-500 text-amber-600 dark:text-amber-400'
+                            : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        <span className="mb-1 block h-7 rounded" style={{ background: backdrop.color }} />
+                        <span className="block truncate">{backdrop.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Mode Selector Tabs */}
                 <div className="grid grid-cols-3 gap-1.5 bg-slate-100 dark:bg-slate-900/60 p-1 rounded-xl">
                   <button
-                    onClick={() => { setBgMode('preset'); soundEffects.playClick(); }}
+                    onClick={() => { setQuickBackdrop(null); setBgMode('preset'); soundEffects.playClick(); }}
                     className={`py-1.5 text-center text-xs font-bold rounded-lg transition-all ${
                       bgMode === 'preset'
                         ? 'bg-white dark:bg-[#0B1528] text-amber-500 shadow-xs'
@@ -882,7 +1294,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                     {isArabic ? 'استوديو جاهز' : 'Presets'}
                   </button>
                   <button
-                    onClick={() => { setBgMode('customGradient'); soundEffects.playClick(); }}
+                    onClick={() => { setQuickBackdrop(null); setBgMode('customGradient'); soundEffects.playClick(); }}
                     className={`py-1.5 text-center text-xs font-bold rounded-lg transition-all ${
                       bgMode === 'customGradient'
                         ? 'bg-white dark:bg-[#0B1528] text-amber-500 shadow-xs'
@@ -892,7 +1304,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                     {isArabic ? 'تدرج مخصص' : 'Custom Gradient'}
                   </button>
                   <button
-                    onClick={() => { setBgMode('solid'); soundEffects.playClick(); }}
+                    onClick={() => { setQuickBackdrop(null); setBgMode('solid'); soundEffects.playClick(); }}
                     className={`py-1.5 text-center text-xs font-bold rounded-lg transition-all ${
                       bgMode === 'solid'
                         ? 'bg-white dark:bg-[#0B1528] text-amber-500 shadow-xs'
@@ -910,14 +1322,15 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                     <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px]">
                       {[
                         { id: 'all', label: isArabic ? 'الكل' : 'All' },
-                        { id: 'luxury', label: isArabic ? 'فخامة وملكي' : 'Luxury' },
-                        { id: 'nature', label: isArabic ? 'طبيعة وخشب' : 'Nature' },
-                        { id: 'studio', label: isArabic ? 'استوديو ناعم' : 'Studio' },
-                        { id: 'modern', label: isArabic ? 'تدرجات وغروب' : 'Modern' }
+                        { id: 'studio', label: isArabic ? 'استوديو' : 'Studio' },
+                        { id: 'wall', label: isArabic ? 'جدران' : 'Walls' },
+                        { id: 'wood', label: isArabic ? 'خشب' : 'Wood' },
+                        { id: 'gradient', label: isArabic ? 'تدرجات' : 'Gradients' },
+                        { id: 'classic', label: isArabic ? 'كلاسيكي' : 'Classic' }
                       ].map((c) => (
                         <button
                           key={c.id}
-                          onClick={() => setThemeCategory(c.id as any)}
+                          onClick={() => setThemeCategory(c.id as typeof themeCategory)}
                           className={`px-2.5 py-1 rounded-lg whitespace-nowrap transition-colors ${
                             themeCategory === c.id
                               ? 'bg-amber-500 text-slate-950 font-bold'
@@ -930,7 +1343,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                     </div>
 
                     {/* Presets Grid */}
-                    <div className="grid grid-cols-2 gap-2 max-h-56 overflow-y-auto pe-1">
+                    <div className="grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pe-1 sm:grid-cols-3">
                       {filteredThemes.map((theme) => (
                         <button
                           key={theme.id}
@@ -941,10 +1354,19 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                               : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-700'
                           }`}
                         >
-                          <div 
-                            className="w-full h-8 rounded-lg shadow-inner border border-white/10" 
+                          <div
+                            className="relative flex h-16 w-full items-end justify-center overflow-hidden rounded-lg border border-white/20 shadow-inner"
                             style={{ background: theme.previewBg }}
-                          />
+                          >
+                            <span className="absolute inset-x-0 bottom-1 h-2 rounded-full bg-black/25 blur-sm" />
+                            {subjectImage && (
+                              <img
+                                src={subjectImage.processedUrl || subjectImage.originalUrl}
+                                alt=""
+                                className="relative z-10 mb-1 max-h-[85%] max-w-[62%] object-contain drop-shadow-md"
+                              />
+                            )}
+                          </div>
                           <div className="text-[11px] truncate font-semibold">{isArabic ? theme.name : theme.nameEn}</div>
                         </button>
                       ))}
@@ -1204,7 +1626,6 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                     className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
                   />
                 </div>
-
               </div>
             )}
           </div>
@@ -1352,7 +1773,6 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                     </div>
                   )}
                 </div>
-
               </div>
             )}
           </div>
@@ -1585,6 +2005,8 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
             )}
           </div>
 
+            </div>
+          </details>
         </div>
 
       </div>

@@ -3,65 +3,85 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import confetti from 'canvas-confetti';
-import { Header } from './components/Header';
-import { StudioWorkspace } from './components/StudioWorkspace';
-import { BackgroundGenerator } from './components/BackgroundGenerator';
-import { StoryboardWorkspace } from './components/StoryboardWorkspace';
-import { SupirEnhancer } from './components/SupirEnhancer';
-import { SidebarDrawer } from './components/SidebarDrawer';
-import { ReportsView } from './components/ReportsView';
-import { AnalyticsView } from './components/AnalyticsView';
-import { ImageComparisonModal } from './components/ImageComparisonModal';
-import { UserGuideModal } from './components/UserGuideModal';
-import { SupportModal } from './components/SupportModal';
-import { UpdatesModal } from './components/UpdatesModal';
+import { StudioWorkspace } from './features/isolate/StudioWorkspace';
+import { SupirEnhancer } from './features/enhance/SupirEnhancer';
+import { BackgroundGenerator } from './features/scenes/BackgroundGenerator';
+import { StoryboardWorkspace } from './features/board/StoryboardWorkspace';
+import { AdStoryboard } from './features/ads/AdStoryboard';
+import { Header } from './shared/ui/Header';
+import { SidebarDrawer } from './shared/ui/SidebarDrawer';
+import { ImageComparisonModal } from './shared/ui/ImageComparisonModal';
+import { UserGuideModal } from './shared/ui/UserGuideModal';
+import { SupportModal } from './shared/ui/SupportModal';
+import { UpdatesModal } from './shared/ui/UpdatesModal';
 import { ProcessedImage, RembgSettings, ErrorLogEntry, StudioStats } from './types';
-import { processImageUnified, fetchSystemStatus } from './services/api';
-import { soundEffects } from './utils/audio';
-import { createSampleImages } from './utils/sampleImages';
+import { ProjectsLibrary } from './features/library/ProjectsLibrary';
+import { AutoStudioProgress, type AutoStudioStep } from './features/library/AutoStudioProgress';
+import type { SceneProjectState } from './features/scenes/BackgroundGenerator';
+import type { EnhanceProjectState } from './features/enhance/SupirEnhancer';
+import type { StoryboardFrame } from './features/board/StoryboardWorkspace';
+import type { ProductType, ProductDescription } from './shared/lib/visionProvider';
+import { processImageUnified, fetchSystemStatus } from './shared/lib/api';
+import { autoEnhance, createStoryboardFrames, generateWhiteStudioScenes, smartIsolate } from './shared/lib/autoStudio';
+import { processingQueue } from './shared/lib/processingQueue';
+import { soundEffects } from './shared/lib/audio';
+import { useStudioStore } from './store/useStudioStore';
+import {
+  friendlyStorageError,
+  listProjects,
+  loadProject,
+  requestPersistentStorage,
+  saveImageProject,
+  type Project,
+  type ProjectStage
+} from './store/projectDatabase';
 
-const DEFAULT_SETTINGS: RembgSettings = {
-  model: 'u2net',
-  alphaMatting: true,
-  af: 240,
-  ab: 10,
-  ae: 10,
-  edgeFeathering: 2,
-  outputFormat: 'png',
-  backgroundType: 'transparent',
-  backgroundColor: '#FFFFFF',
-  autoSave: false,
-  engineMode: 'server',
-  soundAlerts: true,
-  browserNotifications: false,
-};
+interface AutoStudioProgressState {
+  runId: number;
+  step: AutoStudioStep;
+  progress: number;
+  detail: string;
+  error?: string | null;
+}
 
 export default function App() {
   // Primary Tabs: 'removal' (عزل) | 'supir' (تحسين) | 'generator' (مشاهد) | 'storyboard' (لوحتي)
-  const [activeTab, setActiveTab] = useState<'removal' | 'supir' | 'generator' | 'storyboard' | 'reports' | 'analytics'>('removal');
+  const [activeTab, setActiveTab] = useState<'removal' | 'supir' | 'generator' | 'storyboard' | 'ads' | 'library'>('removal');
   const [isDark, setIsDark] = useState<boolean>(true);
   const [isArabic, setIsArabic] = useState<boolean>(true);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
 
-  const [settings, setSettings] = useState<RembgSettings>(() => {
-    try {
-      const saved = localStorage.getItem('alshams_settings');
-      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
-    } catch {
-      return DEFAULT_SETTINGS;
-    }
-  });
-
-  const [images, setImages] = useState<ProcessedImage[]>([]);
-  const [selectedForGenerator, setSelectedForGenerator] = useState<ProcessedImage | null>(null);
-  const [errorLogs, setErrorLogs] = useState<ErrorLogEntry[]>([]);
+  const {
+    settings,
+    setSettings,
+    images,
+    setImages,
+    selectedForGenerator,
+    setSelectedForGenerator,
+  } = useStudioStore();
+  const [, setErrorLogs] = useState<ErrorLogEntry[]>([]);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [currentProcessingId, setCurrentProcessingId] = useState<string | null>(null);
   const [overallProgress, setOverallProgress] = useState<number>(0);
   const [inspectImage, setInspectImage] = useState<ProcessedImage | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => localStorage.getItem('alshams_active_project'));
+  const [projectsReady, setProjectsReady] = useState(false);
+  const [storageMessage, setStorageMessage] = useState<string | null>(null);
+  const [projectState, setProjectState] = useState<Record<string, Partial<Pick<Project, 'productType' | 'productDescription' | 'materials' | 'enhanceSettings' | 'scenes' | 'boardFrames' | 'dimensions' | 'adCopy' | 'adFrames' | 'studioSettings'>> & { enhancedUrl?: string | null }>>({});
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const autoRunIdRef = useRef(0);
+  const activeAutoRunRef = useRef<number | null>(null);
+  const cancelledAutoRunsRef = useRef(new Set<number>());
+  const [autoStudioProgress, setAutoStudioProgress] = useState<AutoStudioProgressState | null>(null);
+  const activeStage = activeTab === 'library' ? undefined : activeTab as ProjectStage;
+  const enqueueProjectSave = (save: () => Promise<unknown>) => {
+    const queuedSave = saveQueueRef.current.then(save);
+    saveQueueRef.current = queuedSave.then(() => undefined, () => undefined);
+    return queuedSave;
+  };
 
   // Modals
   const [isGuideOpen, setIsGuideOpen] = useState<boolean>(false);
@@ -75,7 +95,7 @@ export default function App() {
   const cancelRef = useRef<boolean>(false);
 
   // Stats calculation
-  const [stats, setStats] = useState<StudioStats>({
+  const [, setStats] = useState<StudioStats>({
     totalProcessed: 0,
     successfulCount: 0,
     failedCount: 0,
@@ -84,15 +104,6 @@ export default function App() {
     totalTimeSpentMs: 0,
     dailyHistory: [],
   });
-
-  // Sync settings to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('alshams_settings', JSON.stringify(settings));
-    } catch {
-      // ignore
-    }
-  }, [settings]);
 
   // Sync dark class on documentElement
   useEffect(() => {
@@ -109,15 +120,102 @@ export default function App() {
     document.documentElement.dir = isArabic ? 'rtl' : 'ltr';
   }, [isArabic]);
 
-  // Check system status on mount & auto-load sample images if queue empty
+  // Check system status on mount
   useEffect(() => {
-    fetchSystemStatus().then((status) => {
-      // silent
-    });
-
-    const samples = createSampleImages();
-    setImages(samples);
+    void fetchSystemStatus();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void listProjects().then(async (savedProjects) => {
+      if (!active) return;
+      const restored = await Promise.all(savedProjects.map((project) => loadProject(project.id)));
+      if (!active) return;
+      const savedImages = restored.flatMap((entry) => entry ? [{
+        ...entry.image,
+        status: entry.image.status === 'processing' ? 'pending' as const : entry.image.status
+      }] : []);
+      if (savedImages.length) {
+        const preferred = activeProjectId && savedImages.some((image) => image.id === activeProjectId)
+          ? activeProjectId
+          : savedImages[0].id;
+        setImages([
+          ...savedImages.filter((image) => image.id === preferred),
+          ...savedImages.filter((image) => image.id !== preferred)
+        ]);
+        setActiveProjectId(preferred);
+        localStorage.setItem('alshams_active_project', preferred);
+        const selectedEntry = restored.find((entry) => entry?.project.id === preferred);
+        const selected = selectedEntry?.project;
+        if (selected) {
+          restored.forEach((entry) => {
+            if (!entry || entry.project.id === preferred) return;
+            if (entry.enhancedUrl) URL.revokeObjectURL(entry.enhancedUrl);
+            entry.scenes.forEach((scene) => {
+              if (typeof scene.imageUrl === 'string' && scene.imageUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(scene.imageUrl);
+              }
+            });
+            entry.boardFrames.forEach((frame) => {
+              if (typeof frame.imageUrl === 'string' && frame.imageUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(frame.imageUrl);
+              }
+            });
+          });
+          setProjectState((prev) => ({
+            ...prev,
+            [preferred]: {
+              enhanceSettings: selected.enhanceSettings,
+              productType: selected.productType,
+              productDescription: selected.productDescription,
+              materials: selected.materials,
+              adFrames: selected.adFrames,
+              adCopy: selected.adCopy,
+              scenes: selectedEntry?.scenes || selected.scenes,
+              boardFrames: selectedEntry?.boardFrames as unknown as Record<string, unknown>[] || selected.boardFrames,
+              dimensions: selected.dimensions,
+              studioSettings: selected.studioSettings,
+              enhancedUrl: selectedEntry?.enhancedUrl || null
+            }
+          }));
+          setSettings(selected.studioSettings);
+          setActiveTab(selected.lastStage);
+        }
+      } else {
+        setActiveProjectId(null);
+      }
+      setProjectsReady(true);
+    }).catch((error: unknown) => {
+      if (active) {
+        setStorageMessage(friendlyStorageError(error));
+        setProjectsReady(true);
+      }
+    });
+    void requestPersistentStorage().catch((error: unknown) => {
+      if (active) setStorageMessage(friendlyStorageError(error));
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!projectsReady || !images.length || activeTab === 'library') return;
+    const timer = window.setTimeout(() => {
+      for (const image of images) {
+        const stage = image.id === activeProjectId ? activeStage : undefined;
+        const data = { ...projectState[image.id], studioSettings: settings };
+        void enqueueProjectSave(() =>
+          saveImageProject(image, stage, data)
+        ).then(() => setStorageMessage(null)).catch((error: unknown) => {
+          setStorageMessage(friendlyStorageError(error));
+        });
+      }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [images, settings, activeProjectId, activeStage, activeTab, projectState, projectsReady]);
+
+  useEffect(() => {
+    if (activeProjectId) localStorage.setItem('alshams_active_project', activeProjectId);
+  }, [activeProjectId]);
 
   const updateSettings = (partial: Partial<RembgSettings>) => {
     setSettings((prev) => ({ ...prev, ...partial }));
@@ -125,6 +223,129 @@ export default function App() {
 
   const toggleDarkMode = () => setIsDark((d) => !d);
   const toggleLanguage = () => setIsArabic((a) => !a);
+
+  const runAutoStudio = async (items: ProcessedImage[]) => {
+    const runId = ++autoRunIdRef.current;
+    const updateProgress = (progress: Omit<AutoStudioProgressState, 'runId'>) => {
+      if (activeAutoRunRef.current === runId) setAutoStudioProgress({ runId, ...progress });
+    };
+    setAutoStudioProgress({ runId, step: 'queued', progress: 0, detail: 'بانتظار انتهاء المهمة الحالية...' });
+    await processingQueue.run(async () => {
+      activeAutoRunRef.current = runId;
+      try {
+        for (const item of items) {
+          if (cancelledAutoRunsRef.current.has(runId)) break;
+          setActiveProjectId(item.id);
+          updateProgress({ step: 'isolate', progress: 0, detail: `عزل المنتج: ${item.name}` });
+          const isolatedBlob = await smartIsolate(item.originalUrl, (progress) => {
+            updateProgress({ step: 'isolate', progress: Math.round(progress * 0.25), detail: `جارٍ عزل المنتج · ${progress}%` });
+          });
+          if (cancelledAutoRunsRef.current.has(runId)) break;
+
+          const isolatedUrl = URL.createObjectURL(isolatedBlob);
+          const isolatedItem: ProcessedImage = {
+            ...item,
+            processedUrl: isolatedUrl,
+            status: 'completed',
+            outputWidth: item.originalWidth,
+            outputHeight: item.originalHeight,
+            outputSize: isolatedBlob.size,
+            processingTimeMs: 0,
+            history: [item.originalUrl]
+          };
+          setImages((previous) => previous.map((image) => image.id === item.id ? isolatedItem : image));
+          await enqueueProjectSave(() => saveImageProject(isolatedItem, 'removal', { studioSettings: settings }));
+          updateProgress({ step: 'enhance', progress: 25, detail: 'تحليل الإضاءة والألوان لتحسين الصورة...' });
+
+          const enhanced = await autoEnhance(isolatedBlob);
+          if (cancelledAutoRunsRef.current.has(runId)) break;
+          const enhancedUrl = URL.createObjectURL(enhanced.blob);
+          const enhanceSettings = {
+            scaleFactor: enhanced.settings.scaleFactor,
+            brightness: enhanced.settings.brightness,
+            contrast: enhanced.settings.contrast,
+            sharpness: enhanced.settings.sharpness
+          };
+          setProjectState((previous) => ({
+            ...previous,
+            [item.id]: { ...previous[item.id], enhanceSettings, enhancedUrl }
+          }));
+          await enqueueProjectSave(() => saveImageProject(isolatedItem, 'supir', {
+            enhancedUrl,
+            enhanceSettings,
+            studioSettings: settings
+          }));
+          updateProgress({ step: 'scenes', progress: 40, detail: 'إنشاء 12 صورة استوديو بالمقاسات والزوايا المختلفة...' });
+
+          const generatedScenes = await generateWhiteStudioScenes(enhanced.blob, (completed, total) => {
+            updateProgress({
+              step: 'scenes',
+              progress: 40 + Math.round(completed / total * 45),
+              detail: `تجهيز المشاهد · ${completed} من ${total}`
+            });
+          });
+          if (cancelledAutoRunsRef.current.has(runId)) break;
+          const scenes = generatedScenes.map((scene) => ({
+            id: scene.id,
+            title: scene.title,
+            aspectRatio: scene.aspectRatio,
+            position: scene.position,
+            imageUrl: URL.createObjectURL(scene.blob),
+            kind: 'generated'
+          }));
+          const sceneRecords = scenes as unknown as Record<string, unknown>[];
+          setProjectState((previous) => ({
+            ...previous,
+            [item.id]: {
+              ...previous[item.id],
+              enhanceSettings,
+              enhancedUrl,
+              scenes: sceneRecords
+            }
+          }));
+          await enqueueProjectSave(() => saveImageProject(isolatedItem, 'generator', {
+            enhancedUrl,
+            enhanceSettings,
+            scenes: sceneRecords,
+            studioSettings: settings
+          }));
+          updateProgress({ step: 'board', progress: 88, detail: 'ترتيب جميع المشاهد في لوحتي...' });
+          const boardFrames = createStoryboardFrames(scenes);
+          setProjectState((previous) => ({
+            ...previous,
+            [item.id]: {
+              ...previous[item.id],
+              enhanceSettings,
+              enhancedUrl,
+              scenes: sceneRecords,
+              boardFrames: boardFrames as unknown as Record<string, unknown>[]
+            }
+          }));
+          await enqueueProjectSave(() => saveImageProject(isolatedItem, 'storyboard', {
+            enhancedUrl,
+            enhanceSettings,
+            scenes: scenes as unknown as Record<string, unknown>[],
+            boardFrames: boardFrames as unknown as Record<string, unknown>[],
+            studioSettings: settings
+          }));
+          updateProgress({ step: 'done', progress: 100, detail: `اكتمل إعداد ${item.name}. يمكنك تعديل النتيجة من أي تبويب.` });
+        }
+        if (cancelledAutoRunsRef.current.has(runId)) {
+          updateProgress({ step: 'cancelled', progress: 0, detail: 'تم إيقاف الخطوات التالية. النتائج المكتملة محفوظة.' });
+        }
+      } catch (error) {
+        const message = friendlyStorageError(error);
+        updateProgress({ step: 'error', progress: 0, detail: '', error: message });
+        setStorageMessage(message);
+      } finally {
+        if (activeAutoRunRef.current === runId) activeAutoRunRef.current = null;
+      }
+    });
+  };
+
+  const cancelAutoStudio = () => {
+    if (autoStudioProgress) cancelledAutoRunsRef.current.add(autoStudioProgress.runId);
+  };
 
   // File selection handler
   const handleFilesSelected = (fileList: FileList | File[]) => {
@@ -161,18 +382,16 @@ export default function App() {
           loadedCount++;
           if (loadedCount === files.length) {
             setImages((prev) => [...prev, ...newItems]);
+            if (newItems[0]) {
+              setActiveProjectId(newItems[0].id);
+              void runAutoStudio(newItems);
+            }
           }
         };
         img.src = url;
       };
       reader.readAsDataURL(file);
     });
-  };
-
-  const handleLoadSamples = () => {
-    const samples = createSampleImages();
-    setImages((prev) => [...prev, ...samples]);
-    soundEffects.playClick();
   };
 
   // Start Batch Processing Loop
@@ -206,7 +425,7 @@ export default function App() {
       );
 
       try {
-        const result = await processImageUnified(item, settings);
+        const result = await processingQueue.run(() => processImageUnified(item, settings));
 
         setImages((prev) =>
           prev.map((img) => {
@@ -328,6 +547,24 @@ export default function App() {
     soundEffects.playClick();
   };
 
+  const handleManualEdit = (id: string, dataUrl: string) => {
+    setActiveProjectId(id);
+    setImages((prev) =>
+      prev.map((image) =>
+        image.id === id
+          ? {
+              ...image,
+              processedUrl: dataUrl,
+              status: 'completed',
+              outputWidth: image.originalWidth,
+              outputHeight: image.originalHeight,
+              outputSize: Math.round(dataUrl.length * 0.75),
+            }
+          : image
+      )
+    );
+  };
+
   const handleRevertAll = () => {
     cancelRef.current = true;
     setIsProcessing(false);
@@ -369,33 +606,95 @@ export default function App() {
     soundEffects.playClick();
   };
 
-  const handleRetryAllErrors = () => {
-    setImages((prev) =>
-      prev.map((img) => (img.status === 'error' ? { ...img, status: 'pending', error: null } : img))
-    );
-    setActiveTab('removal');
-    setTimeout(() => {
-      handleStartProcessing();
-    }, 150);
-  };
-
   const handleSendToGenerator = (item: ProcessedImage) => {
     setSelectedForGenerator(item);
+    setActiveProjectId(item.id);
     setActiveTab('generator');
     soundEffects.playClick();
   };
 
   const handleAddImageFromGenerator = (item: ProcessedImage) => {
     setImages((prev) => [item, ...prev]);
+    setActiveProjectId(item.id);
+  };
+
+  const handleTabChange = (tab: typeof activeTab) => {
+    if (activeProjectId && activeStage) {
+      const currentImage = images.find((image) => image.id === activeProjectId);
+      if (currentImage) {
+        void enqueueProjectSave(() => saveImageProject(currentImage, activeStage, { ...projectState[activeProjectId], studioSettings: settings }))
+          .catch((error: unknown) => setStorageMessage(friendlyStorageError(error)));
+      }
+    }
+    setActiveTab(tab);
+  };
+
+  const handleProjectStateChange = useCallback((
+    id: string,
+    data: Partial<Pick<Project, 'productType' | 'productDescription' | 'materials' | 'enhanceSettings' | 'scenes' | 'boardFrames' | 'dimensions' | 'adCopy' | 'adFrames' | 'studioSettings'>> & { enhancedUrl?: string | null }
+  ) => {
+    setProjectState((previous) => {
+      const merged = { ...previous[id], ...data };
+      if (JSON.stringify(previous[id]) === JSON.stringify(merged)) return previous;
+      return { ...previous, [id]: merged };
+    });
+  }, []);
+
+  const handleActiveImageChange = useCallback((id: string) => {
+    setActiveProjectId((current) => current === id ? current : id);
+  }, []);
+
+  const handleOpenProject = async (id: string, stage: ProjectStage) => {
+    try {
+      const loaded = await loadProject(id);
+      if (!loaded) throw new Error('تعذر فتح المشروع.');
+      setImages([{
+        ...loaded.image,
+        status: loaded.image.status === 'processing' ? 'pending' : loaded.image.status
+      }]);
+      setActiveProjectId(id);
+      setProjectState((previous) => ({
+        ...previous,
+        [id]: {
+          enhanceSettings: loaded.project.enhanceSettings,
+          productType: loaded.project.productType,
+          productDescription: loaded.project.productDescription,
+          materials: loaded.project.materials,
+          adFrames: loaded.project.adFrames,
+          adCopy: loaded.project.adCopy,
+          scenes: loaded.scenes as unknown as Record<string, unknown>[],
+          boardFrames: loaded.boardFrames as unknown as Record<string, unknown>[],
+          dimensions: loaded.project.dimensions,
+          studioSettings: loaded.project.studioSettings,
+          enhancedUrl: loaded.enhancedUrl
+        }
+      }));
+      setSettings(loaded.project.studioSettings);
+      setActiveTab(stage);
+    } catch (error) {
+      setStorageMessage(friendlyStorageError(error));
+    }
+  };
+
+  const handleProjectDeleted = (id: string) => {
+    setImages((previous) => previous.filter((image) => image.id !== id));
+    setProjectState((previous) => {
+      const { [id]: _deleted, ...remaining } = previous;
+      return remaining;
+    });
+    if (activeProjectId === id) {
+      const next = images.find((image) => image.id !== id);
+      setActiveProjectId(next?.id || null);
+    }
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#070E1A] text-slate-900 dark:text-slate-100 transition-colors overflow-x-hidden w-full max-w-full">
+    <div className="flex h-dvh min-h-0 w-full max-w-full flex-col overflow-hidden bg-slate-50 text-slate-900 transition-colors dark:bg-[#070E1A] dark:text-slate-100">
       
       {/* Top Header with Brand, 4 Main Workflow Tabs, and Drawer Trigger */}
       <Header
-        activeTab={activeTab as any}
-        setActiveTab={setActiveTab as any}
+        activeTab={activeTab}
+        setActiveTab={handleTabChange}
         isDark={isDark}
         toggleDarkMode={toggleDarkMode}
         isArabic={isArabic}
@@ -404,7 +703,23 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <main className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col overflow-hidden px-3 py-2 sm:px-6 sm:py-4 lg:px-8">
+        {storageMessage && (
+          <p role="alert" className="mb-2 shrink-0 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            {storageMessage}
+          </p>
+        )}
+        {autoStudioProgress && (
+          <AutoStudioProgress
+            step={autoStudioProgress.step}
+            progress={autoStudioProgress.progress}
+            detail={autoStudioProgress.detail}
+            error={autoStudioProgress.error}
+            onCancel={cancelAutoStudio}
+            onNavigate={handleTabChange}
+            isArabic={isArabic}
+          />
+        )}
         
         {/* 1. عزل */}
         {activeTab === 'removal' && (
@@ -417,13 +732,14 @@ export default function App() {
             settings={settings}
             updateSettings={updateSettings}
             onFilesSelected={handleFilesSelected}
-            onLoadSamples={handleLoadSamples}
+            onManualEdit={handleManualEdit}
             onStartProcessing={handleStartProcessing}
             onPauseProcessing={handlePauseProcessing}
             onResumeProcessing={handleResumeProcessing}
             onRevertAll={handleRevertAll}
             onClearAll={handleClearAll}
             onInspectImage={(img) => setInspectImage(img)}
+            onActiveImageChange={handleActiveImageChange}
             onRestoreOriginal={handleRestoreOriginal}
             onDownloadSingle={triggerSingleDownload}
             onRemoveImage={handleRemoveImage}
@@ -438,6 +754,16 @@ export default function App() {
             images={images}
             isArabic={isArabic}
             onAddImageToLibrary={handleAddImageFromGenerator}
+            onActiveImageChange={handleActiveImageChange}
+            initialEnhanceSettings={activeProjectId ? projectState[activeProjectId]?.enhanceSettings as Partial<EnhanceProjectState> | undefined : undefined}
+            initialEnhancedUrl={activeProjectId ? projectState[activeProjectId]?.enhancedUrl : null}
+            onEnhanceStateChange={(enhanceSettings, enhancedUrl) => {
+              if (!activeProjectId) return;
+              handleProjectStateChange(activeProjectId, {
+                enhanceSettings: { ...enhanceSettings },
+                enhancedUrl
+              });
+            }}
           />
         )}
 
@@ -449,6 +775,82 @@ export default function App() {
             settings={settings}
             onAddImageToLibrary={handleAddImageFromGenerator}
             isArabic={isArabic}
+            onActiveImageChange={handleActiveImageChange}
+            generatedScenes={activeProjectId
+              ? (projectState[activeProjectId]?.scenes || [])
+                .filter((scene) => scene.kind === 'generated' || scene.kind === 'advisor')
+                .map((scene) => ({
+                  id: String(scene.id || ''),
+                  title: String(scene.title || ''),
+                  aspectRatio: String(scene.aspectRatio || ''),
+                  position: String(scene.position || ''),
+                  imageUrl: typeof scene.imageUrl === 'string' ? scene.imageUrl : null
+                }))
+              : []}
+            advisorProductType={(projectState[activeProjectId || '']?.productType as ProductType) || 'other'}
+            advisorDescription={projectState[activeProjectId || '']?.productDescription || ''}
+            onAdvisorTypeChange={(productType) => {
+              if (activeProjectId) handleProjectStateChange(activeProjectId, { productType });
+            }}
+            onAdvisorDescriptionChange={(description) => {
+              if (activeProjectId) handleProjectStateChange(activeProjectId, {
+                productType: description.type,
+                productDescription: description.description,
+                materials: description.materials
+              });
+            }}
+            onAdvisorSceneChoose={(chosen) => {
+              if (!activeProjectId) return;
+              const sceneId = `advisor-${chosen.id}`;
+              const nextScene = {
+                id: sceneId,
+                title: chosen.title,
+                aspectRatio: '4:5',
+                position: 'center',
+                imageUrl: chosen.imageUrl,
+                prompt: chosen.prompt,
+                kind: 'advisor'
+              };
+              const currentScenes = projectState[activeProjectId]?.scenes || [];
+              const nextScenes = [...currentScenes.filter((scene) => scene.id !== sceneId), nextScene];
+              const currentFrames = (projectState[activeProjectId]?.boardFrames || []) as unknown as StoryboardFrame[];
+              const nextFrame: StoryboardFrame = {
+                id: `ad-${sceneId}`,
+                sceneId,
+                type: 'lifestyle',
+                title: chosen.title,
+                titleEn: chosen.title,
+                aspectRatioLabel: '4:5',
+                aspectRatioClass: 'aspect-[4/5]',
+                aspectRatioNum: 4 / 5,
+                description: chosen.prompt,
+                imageUrl: chosen.imageUrl,
+                zoom: 100,
+                panX: 0,
+                panY: 0,
+                backdrop: 'clean',
+                caption: chosen.title,
+                tag: 'Scene Advisor'
+              };
+              handleProjectStateChange(activeProjectId, {
+                productType: chosen.type,
+                scenes: nextScenes as unknown as Record<string, unknown>[],
+                boardFrames: [...currentFrames.filter((frame) => frame.id !== nextFrame.id), nextFrame] as unknown as Record<string, unknown>[]
+              });
+              setStorageMessage('تم حفظ المشهد في المشروع وإضافته إلى لوحتي.');
+            }}
+            initialSceneState={activeProjectId
+              ? (projectState[activeProjectId]?.scenes?.find((scene) => scene.kind === 'settings')
+                || projectState[activeProjectId]?.scenes?.find((scene) => !scene.id)) as Partial<SceneProjectState> | undefined
+              : undefined}
+            onSceneStateChange={(sceneState) => {
+              if (activeProjectId) {
+                const generatedScenes = (projectState[activeProjectId]?.scenes || []).filter((scene) => Boolean(scene.id));
+                handleProjectStateChange(activeProjectId, {
+                  scenes: [{ kind: 'settings', ...sceneState }, ...generatedScenes]
+                });
+              }
+            }}
           />
         )}
 
@@ -458,34 +860,55 @@ export default function App() {
             images={images}
             isArabic={isArabic}
             onAddImageToLibrary={handleAddImageFromGenerator}
+            initialBoardFrames={activeProjectId ? projectState[activeProjectId]?.boardFrames as unknown as StoryboardFrame[] | undefined : undefined}
+            initialBoardDimensions={activeProjectId ? projectState[activeProjectId]?.dimensions : undefined}
+            onBoardStateChange={(boardFrames, dimensions) => {
+              if (activeProjectId) handleProjectStateChange(activeProjectId, {
+                boardFrames: boardFrames as unknown as Record<string, unknown>[],
+                dimensions
+              });
+            }}
           />
         )}
 
-        {/* Secondary Views accessed via direct link if needed */}
-        {activeTab === 'reports' && (
-          <ReportsView
-            images={images}
-            settings={settings}
-            onDownloadSingle={triggerSingleDownload}
-            onClearReports={handleClearAll}
+        {activeTab === 'ads' && (
+          <AdStoryboard
+            frames={(projectState[activeProjectId || '']?.boardFrames || []) as unknown as StoryboardFrame[]}
             isArabic={isArabic}
+            product={{
+              type: (projectState[activeProjectId || '']?.productType as ProductType) || 'other',
+              description: projectState[activeProjectId || '']?.productDescription || '',
+              materials: projectState[activeProjectId || '']?.materials || []
+            }}
+            dimensions={(() => {
+              const frame = ((projectState[activeProjectId || '']?.boardFrames || []) as unknown as StoryboardFrame[])[0];
+              if (!frame) return '';
+              return [frame.dimHeight, frame.dimWidth, frame.dimDepth].filter((value) => value !== undefined).join(' × ')
+                + (frame.dimUnit ? ` ${frame.dimUnit}` : '');
+            })()}
+            initialAdFrames={projectState[activeProjectId || '']?.adFrames}
+            onStateChange={(adFrames, adCopy) => {
+              if (activeProjectId) handleProjectStateChange(activeProjectId, { adFrames, adCopy });
+            }}
           />
         )}
 
-        {activeTab === 'analytics' && (
-          <AnalyticsView
-            stats={stats}
-            images={images}
+        {activeTab === 'library' && (
+          <ProjectsLibrary
             isArabic={isArabic}
+            onOpenProject={(id, stage) => void handleOpenProject(id, stage)}
+            onCreateProject={() => handleTabChange('removal')}
+            onDeleteProject={handleProjectDeleted}
           />
         )}
+
       </main>
 
       {/* Footer - Single clean line per user request */}
-      <footer className="border-t border-slate-200 dark:border-slate-800/80 bg-white dark:bg-[#0A1324] py-3.5 px-4 text-xs text-slate-500 dark:text-slate-400 mt-auto">
+      <footer className="shrink-0 border-t border-slate-200 bg-white px-4 py-2 text-xs text-slate-500 dark:border-slate-800/80 dark:bg-[#0A1324] dark:text-slate-400 sm:py-3">
         <div className="max-w-7xl mx-auto flex items-center justify-center text-center">
           <p className="font-semibold text-slate-700 dark:text-slate-300">
-            {isArabic ? 'ستوديو الشمساوية · الشمس كرافت © 2026' : 'AlShams Craft Studio © 2026'}
+            ستوديو الشمساوية · الشمس كرافت © 2026
           </p>
         </div>
       </footer>

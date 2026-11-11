@@ -1,4 +1,4 @@
-import { ProcessedImage, RembgSettings } from '../types';
+import { ProcessedImage, RembgSettings } from '../../types';
 import { processImageOffline } from './offlineProcessor';
 import JSZip from 'jszip';
 
@@ -6,13 +6,14 @@ export interface SystemStatus {
   appName: string;
   appEnglishName: string;
   version: string;
-  rembgInstalled: boolean;
+  engineAvailable: boolean;
   engine: string;
   supportWhatsApp: string;
   supportEngineer: string;
-  cachedModels: string[];
+  availableModels: string[];
   defaultModel: string;
   supportsOffline: boolean;
+  supportsBackgroundGeneration: boolean;
   offlineNotice: string;
 }
 
@@ -27,13 +28,14 @@ export async function fetchSystemStatus(): Promise<SystemStatus> {
       appName: 'ستوديو الشمساوية',
       appEnglishName: 'AlShams Craft Studio',
       version: '2.4.0',
-      rembgInstalled: false,
+      engineAvailable: false,
       engine: 'المعالج المحلي الداخلي (Offline Engine)',
       supportWhatsApp: '01000996059',
       supportEngineer: 'م.حسام بسيوني',
-      cachedModels: ['u2net', 'u2netp', 'silueta'],
+      availableModels: ['u2net', 'u2netp', 'silueta'],
       defaultModel: 'u2net',
       supportsOffline: true,
+      supportsBackgroundGeneration: true,
       offlineNotice: 'وضع العمل بدون إنترنت نشط'
     };
   }
@@ -63,7 +65,7 @@ export async function processImageUnified(
     };
   }
 
-  // Try server python rembg first
+  // Try the server-side Node.js background-removal engine first
   try {
     let base64Data = imageItem.originalUrl;
     if (base64Data.startsWith('blob:')) {
@@ -115,7 +117,7 @@ export async function processImageUnified(
       outputSize: data.output_size_bytes,
       processingTimeMs: data.processing_time_ms,
       modelUsed: data.model_used,
-      engineUsed: 'python-rembg'
+      engineUsed: 'node-rembg'
     };
   } catch (err: any) {
     console.warn('Server rembg failed or unreachable, failing over to offline engine:', err.message);

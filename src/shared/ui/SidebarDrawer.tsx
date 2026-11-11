@@ -57,22 +57,10 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
           
           {/* Drawer Header */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-[#070E1A]">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl overflow-hidden bg-white shadow-xs p-0.5 border border-[#D48B16]/30">
-                <img 
-                  src="/assets/aistudio/1790755753712_87b037e0.png" 
-                  alt="AlShams Craft Logo" 
-                  className="w-full h-full object-contain"
-                />
-              </div>
-              <div>
+            <div>
                 <h3 className="text-sm font-bold text-[#0F2952] dark:text-white">
                   {isArabic ? 'ستوديو الشمساوية' : 'AlShams Studio'}
                 </h3>
-                <p className="text-[10px] text-[#D48B16] font-medium">
-                  {isArabic ? 'صعوبتها في بساطتها' : 'Craft & Decor Studio'}
-                </p>
-              </div>
             </div>
 
             <button

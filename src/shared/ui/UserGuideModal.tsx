@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, BookOpen, Cpu, Sliders, WifiOff, Wand2, Terminal, Check } from 'lucide-react';
+import { X, BookOpen, Cpu, Sliders, WifiOff, Wand2, Check } from 'lucide-react';
 
 interface UserGuideModalProps {
   isOpen: boolean;

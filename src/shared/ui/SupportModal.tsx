@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, MessageCircle, Phone, UserCheck, Send, CheckCircle2, ShieldCheck, Clock } from 'lucide-react';
+import { X, MessageCircle, Phone, Send, CheckCircle2, ShieldCheck, Clock } from 'lucide-react';
 
 interface SupportModalProps {
   isOpen: boolean;

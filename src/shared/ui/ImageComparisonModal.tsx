@@ -1,9 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
-  X, Download, RotateCcw, ZoomIn, ZoomOut, Maximize2, 
-  Check, Sparkles, Sliders, SplitSquareVertical
+  X, Download, RotateCcw, ZoomIn, ZoomOut,
+  SplitSquareVertical
 } from 'lucide-react';
-import { ProcessedImage } from '../types';
+import { ProcessedImage } from '../../types';
 
 interface ImageComparisonModalProps {
   image: ProcessedImage | null;

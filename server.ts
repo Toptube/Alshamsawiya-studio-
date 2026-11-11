@@ -1,7 +1,6 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
-import fs from 'fs';
-import os from 'os';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 import { removeBackground } from '@imgly/background-removal-node';
@@ -15,6 +14,11 @@ const PORT = 3000;
 // High limits for batch image transfers
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ extended: true, limit: '60mb' }));
+app.use((_req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+  next();
+});
 
 // Helper to process background removal using Node.js ONNX AI Engine
 async function processWithNodeAI(payload: {
@@ -42,76 +46,61 @@ async function processWithNodeAI(payload: {
   const origW = origMeta.width || 800;
   const origH = origMeta.height || 600;
 
-  // Write temporary input file for ONNX background removal
-  const tempInputPath = path.join(os.tmpdir(), `alshams_in_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.png`);
-  fs.writeFileSync(tempInputPath, inputBuffer);
+  const normalizedInput = await sharp(inputBuffer).png().toBuffer();
+  const resultBlob = await removeBackground(new Blob([normalizedInput], { type: 'image/png' }));
+  const arrayBuffer = await resultBlob.arrayBuffer();
+  let outputBuffer = Buffer.from(arrayBuffer);
 
-  try {
-    // Perform AI background removal via ONNX neural network
-    const resultBlob = await removeBackground(tempInputPath);
-    const arrayBuffer = await resultBlob.arrayBuffer();
-    let outputBuffer = Buffer.from(arrayBuffer);
-
-    // If bgcolor is requested (e.g. "255,255,255" or hex), composite over background
-    if (payload.bgcolor) {
-      try {
-        let r = 255, g = 255, b = 255;
-        if (typeof payload.bgcolor === 'string') {
-          if (payload.bgcolor.startsWith('#')) {
-            const hex = payload.bgcolor.replace('#', '');
-            r = parseInt(hex.substring(0, 2), 16) || 255;
-            g = parseInt(hex.substring(2, 4), 16) || 255;
-            b = parseInt(hex.substring(4, 6), 16) || 255;
-          } else if (payload.bgcolor.includes(',')) {
-            const parts = payload.bgcolor.split(',').map((p) => parseInt(p.trim(), 10));
-            r = parts[0] ?? 255;
-            g = parts[1] ?? 255;
-            b = parts[2] ?? 255;
-          }
-        }
-
-        outputBuffer = await sharp({
-          create: {
-            width: origW,
-            height: origH,
-            channels: 4,
-            background: { r, g, b, alpha: 1 }
-          }
-        })
-          .composite([{ input: outputBuffer }])
-          .png()
-          .toBuffer();
-      } catch (e) {
-        console.warn('Could not apply custom background color, returning transparent output:', e);
-      }
-    }
-
-    const outMeta = await sharp(outputBuffer).metadata();
-    const duration = Date.now() - startTime;
-
-    return {
-      success: true,
-      output_base64: `data:image/png;base64,${outputBuffer.toString('base64')}`,
-      original_width: origW,
-      original_height: origH,
-      output_width: outMeta.width || origW,
-      output_height: outMeta.height || origH,
-      original_size_bytes: originalSize,
-      output_size_bytes: outputBuffer.length,
-      processing_time_ms: duration,
-      model_used: `${payload.model || 'u2net'} (AI ONNX Engine)`,
-      alpha_matting_applied: !!payload.alphaMatting
-    };
-  } finally {
-    // Clean up temporary file
+  // If bgcolor is requested (e.g. "255,255,255" or hex), composite over background
+  if (payload.bgcolor) {
     try {
-      if (fs.existsSync(tempInputPath)) {
-        fs.unlinkSync(tempInputPath);
+      let r = 255, g = 255, b = 255;
+      if (typeof payload.bgcolor === 'string') {
+        if (payload.bgcolor.startsWith('#')) {
+          const hex = payload.bgcolor.replace('#', '');
+          r = parseInt(hex.substring(0, 2), 16) || 255;
+          g = parseInt(hex.substring(2, 4), 16) || 255;
+          b = parseInt(hex.substring(4, 6), 16) || 255;
+        } else if (payload.bgcolor.includes(',')) {
+          const parts = payload.bgcolor.split(',').map((p) => parseInt(p.trim(), 10));
+          r = parts[0] ?? 255;
+          g = parts[1] ?? 255;
+          b = parts[2] ?? 255;
+        }
       }
-    } catch {
-      // ignore
+
+      outputBuffer = await sharp({
+        create: {
+          width: origW,
+          height: origH,
+          channels: 4,
+          background: { r, g, b, alpha: 1 }
+        }
+      })
+        .composite([{ input: outputBuffer }])
+        .png()
+        .toBuffer();
+    } catch (e) {
+      console.warn('Could not apply custom background color, returning transparent output:', e);
     }
   }
+
+  const outMeta = await sharp(outputBuffer).metadata();
+  const duration = Date.now() - startTime;
+
+  return {
+    success: true,
+    output_base64: `data:image/png;base64,${outputBuffer.toString('base64')}`,
+    original_width: origW,
+    original_height: origH,
+    output_width: outMeta.width || origW,
+    output_height: outMeta.height || origH,
+    original_size_bytes: originalSize,
+    output_size_bytes: outputBuffer.length,
+    processing_time_ms: duration,
+    model_used: `${payload.model || 'u2net'} (AI ONNX Engine)`,
+    alpha_matting_applied: !!payload.alphaMatting
+  };
 }
 
 // Primary robust background removal service
@@ -121,7 +110,7 @@ async function executeRembgService(payload: any): Promise<any> {
 }
 
 // System status and capabilities (Proprietary Branded Engine)
-app.get('/api/system/status', (req, res) => {
+app.get('/api/system/status', (_req, res) => {
   res.json({
     appName: 'ستوديو الشمساوية',
     appEnglishName: 'AlShams Craft Studio',
@@ -138,6 +127,63 @@ app.get('/api/system/status', (req, res) => {
   });
 });
 
+app.post('/api/vision/task', async (req, res) => {
+  const { task, image, product, dimensions, apiKey: requestKey } = req.body as {
+    task?: string;
+    image?: string;
+    product?: { type?: string; description?: string; materials?: string[] };
+    dimensions?: string;
+    apiKey?: string;
+  };
+  const apiKey = typeof requestKey === 'string' ? requestKey.trim() : process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(503).json({
+      success: false,
+      code: 'NO_API_KEY',
+      error: 'لم يتم ضبط مفتاح Gemini. اختر نوع المنتج يدوياً لاستخدام القوالب المجانية.'
+    });
+  }
+  if (!['classify', 'scenes', 'ad-copy'].includes(task || '')) {
+    return res.status(400).json({ success: false, code: 'INVALID_TASK', error: 'طلب غير صالح.' });
+  }
+  if ((task === 'classify' || task === 'scenes') && typeof image !== 'string') {
+    return res.status(400).json({ success: false, code: 'MISSING_IMAGE', error: 'الصورة غير متاحة للتحليل.' });
+  }
+
+  try {
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey });
+    const imagePart = image?.includes(',')
+      ? { inlineData: { mimeType: image.slice(5, image.indexOf(';')), data: image.slice(image.indexOf(',') + 1) } }
+      : undefined;
+    let prompt = '';
+    if (task === 'classify') {
+      prompt = 'Analyze this product photo. Return ONLY JSON with fields type (one of cushion, macrame, bag, basket, decor, wooden, other), description (concise English visual description), materials (array of likely materials). Do not invent certain materials; use [] if unclear.';
+    } else if (task === 'scenes') {
+      prompt = `Create exactly 4 distinct premium lifestyle scene recipes for this handmade ${product?.type || 'product'} (${product?.description || ''}). Keep the product pixels unchanged; it will be composited as an untouched foreground cutout. Return ONLY JSON array, each item {id,prompt}; prompts in English, with background setting, lighting, mood and realistic matching contact shadow. No text or watermark.`;
+    } else {
+      prompt = `Write exactly 3 distinct short Arabic marketing copy suggestions for this handmade ${product?.type || 'product'}. Description: ${product?.description || ''}. Materials: ${(product?.materials || []).join(', ') || 'غير محددة'}. Dimensions: ${dimensions || 'غير محددة'}. Return ONLY JSON array of {headline,subline,callToAction}. Keep claims factual and concise.`;
+    }
+    const contents = imagePart ? [{ text: prompt }, imagePart] : prompt;
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents,
+      config: { responseMimeType: 'application/json' }
+    });
+    const text = response.text?.trim();
+    if (!text) throw new Error('لم يصل رد نصي من Gemini.');
+    const result = JSON.parse(text);
+    return res.json({ success: true, result });
+  } catch (error) {
+    const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
+    const code = status === 429 ? 'RATE_LIMIT' : 'PROVIDER_ERROR';
+    const message = status === 429
+      ? 'وصلنا إلى حد الطلبات المؤقت. انتظر قليلاً أو استخدم القوالب المجانية.'
+      : error instanceof Error ? error.message : 'تعذر تنفيذ طلب Gemini.';
+    return res.status(status === 429 ? 429 : 502).json({ success: false, code, error: message });
+  }
+});
+
 // Endpoint for AI Background Synthesis / Scene Presets
 app.post('/api/generate-background', async (req, res) => {
   try {
@@ -148,7 +194,7 @@ app.post('/api/generate-background', async (req, res) => {
     if (apiKey && prompt) {
       try {
         const { GoogleGenAI } = await import('@google/genai');
-        const ai = new GoogleGenAI({ apiKey });
+        new GoogleGenAI({ apiKey });
         // Use gemini-3.1-flash-lite-image or smart prompt description
         console.log('[ستوديو الشمساوية] Synthesizing background with prompt:', prompt);
       } catch (genErr) {
@@ -392,7 +438,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }

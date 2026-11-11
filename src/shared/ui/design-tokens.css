@@ -1,0 +1,64 @@
+:root {
+  color-scheme: light;
+  --studio-navy: #0f2952;
+  --studio-gold: #d48b16;
+  --studio-radius-sm: 0.5rem;
+  --studio-radius-md: 0.75rem;
+  --studio-radius-lg: 1rem;
+  --studio-space-1: 0.25rem;
+  --studio-space-2: 0.5rem;
+  --studio-space-3: 0.75rem;
+  --studio-space-4: 1rem;
+  --studio-shadow-card: 0 8px 26px rgb(15 41 82 / 8%);
+  --studio-text-sm: 0.8125rem;
+  --studio-text-base: 0.9375rem;
+  --studio-text-lg: 1.125rem;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    max-width: 100%;
+    min-width: 320px;
+    overflow-x: clip;
+  }
+
+  button,
+  input,
+  select,
+  textarea,
+  label,
+  p,
+  small,
+  span {
+    font-size: max(13px, 1em);
+  }
+
+  button,
+  [role="button"] {
+    min-height: 44px;
+  }
+
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  [tabindex]:not([tabindex="-1"]) {
+    outline-offset: 3px;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--studio-gold);
+  }
+
+  button,
+  a {
+    touch-action: manipulation;
+  }
+}

@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+*.zip
+/temp/
+/tmp/
+**/test-images/
+*.smoke.png
+*_test.png
+*-test.png

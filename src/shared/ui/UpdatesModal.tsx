@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Sparkles, CheckCircle2, History, ArrowUpRight } from 'lucide-react';
+import { X, Sparkles, CheckCircle2 } from 'lucide-react';
 
 interface UpdatesModalProps {
   isOpen: boolean;

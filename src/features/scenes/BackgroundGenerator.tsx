@@ -9,8 +9,13 @@ import { processImageUnified } from '../../shared/lib/api';
 import { soundEffects } from '../../shared/lib/audio';
 import { SCENES_BACKGROUNDS, SceneBackgroundCategory, SceneBackgroundPreset } from './scenesBackgrounds';
 import { processingQueue } from '../../shared/lib/processingQueue';
-import { SceneAdvisor } from './SceneAdvisor';
 import type { ProductType, ProductDescription } from '../../shared/lib/visionProvider';
+import { ScenePanel, type ScenePanelId } from './panels/ScenePanel';
+import { ScenePanelTabs } from './panels/ScenePanelTabs';
+import { SceneActionBar } from './panels/SceneActionBar';
+import { AspectRatioPanel } from './panels/AspectRatioPanel';
+import { SceneAdvisorPanel } from './panels/SceneAdvisorPanel';
+import { QuickBackgroundPanel } from './panels/QuickBackgroundPanel';
 
 // Expanded Rich Color Tones & Gradients (16 Studio Themes + Custom)
 type StudioTheme = StudioPresetTheme & {
@@ -416,6 +421,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
   const [isSceneReady, setIsSceneReady] = useState(false);
   const [sceneMessage, setSceneMessage] = useState<string | null>(null);
   const [previewedAutoSceneId, setPreviewedAutoSceneId] = useState<string | null>(null);
+  const [activeMobilePanel, setActiveMobilePanel] = useState<ScenePanelId>('background');
   const [shadowTone, setShadowTone] = useState<'neutral' | 'warm' | 'cool'>(initialSceneState?.shadowTone || 'neutral');
 
   // Background effects & lighting (السطوع، الدفء، والتباين)
@@ -435,8 +441,8 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
     lighting: true,
     shadow: true,
     scenes: true,
-    transform: false,
-    edges: false,
+    transform: true,
+    edges: true,
   });
 
   const togglePanel = (panel: keyof typeof openPanels) => {
@@ -976,19 +982,17 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
         </button>
       </div>
 
-      {/* Main Studio Viewport Grid: Fixed/Sticky Canvas on Desktop and Mobile */}
-      <div className="min-h-0 flex-1 grid grid-cols-1 gap-3 overflow-y-auto lg:grid-cols-12 lg:grid-rows-1 lg:gap-4 lg:overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-y-auto pb-20 lg:grid lg:h-[calc(100vh-120px)] lg:grid-cols-2 lg:grid-rows-1 lg:gap-4 lg:overflow-hidden lg:pb-0">
         
-        {/* Left Column: Fixed / Sticky Canvas Viewport (7 cols on lg) */}
-        <div className="col-span-1 min-h-0 space-y-3 self-start lg:sticky lg:top-14 lg:z-10 lg:col-span-7">
-          <div className="bg-white dark:bg-[#0B1528] rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-md space-y-3">
+        <div className="min-w-0 space-y-3 self-start lg:sticky lg:top-3 lg:max-h-[80vh] lg:overflow-y-auto">
+          <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-md dark:border-slate-800 dark:bg-[#0B1528] sm:p-4">
             
             {/* Viewport Control Strip */}
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <Wand2 className="w-4 h-4 text-amber-500" />
                 <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
-                  {isArabic ? 'معاينة المشهد الحي (ثابتة لمتابعة التغييرات)' : 'Live Pinned Viewport'}
+                  {isArabic ? 'معاينة المشهد' : 'Scene preview'}
                 </h3>
               </div>
 
@@ -1023,7 +1027,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                 <button
                   onClick={handleDownloadComposition}
                   disabled={!isSceneReady}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shadow-xs"
+                  className="hidden items-center gap-1.5 rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-bold text-slate-950 shadow-xs transition-colors hover:bg-amber-400 lg:flex"
                 >
                   <Download className="w-3.5 h-3.5" />
                   <span>{isArabic ? 'تحميل' : 'Download'}</span>
@@ -1033,7 +1037,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
                   disabled={!subjectImage || !isSceneReady}
                   title={isArabic ? 'إرسال إلى لوحتي' : 'Send to Storyboard'}
                   aria-label={isArabic ? 'إرسال إلى لوحتي' : 'Send to Storyboard'}
-                  className="flex items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-bold text-[#0F2952] transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-amber-400 dark:hover:bg-slate-800"
+                  className="hidden items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-bold text-[#0F2952] transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-amber-400 dark:hover:bg-slate-800 lg:flex"
                 >
                   <Send className="h-3.5 w-3.5" />
                   <span className="hidden sm:inline">{isArabic ? 'إلى لوحتي' : 'Storyboard'}</span>
@@ -1041,33 +1045,6 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-4 gap-1.5">
-              {([
-                { ratio: '1:1', size: '1080 × 1080', label: isArabic ? 'مربع للمتجر' : 'Store square' },
-                { ratio: '4:5', size: '1080 × 1350', label: isArabic ? 'منشور' : 'Post' },
-                { ratio: '9:16', size: '1080 × 1920', label: isArabic ? 'قصة' : 'Story' },
-                { ratio: '16:9', size: '1920 × 1080', label: isArabic ? 'أفقي' : 'Landscape' },
-              ] as const).map(({ ratio, size, label }) => (
-                <button
-                  key={ratio}
-                  onClick={() => {
-                    setAspectRatio(ratio);
-                    setSceneMessage(null);
-                  }}
-                  aria-pressed={aspectRatio === ratio}
-                  aria-label={`${ratio} ${label} (${size})`}
-                  title={`${label} — ${size}`}
-                  className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold transition-colors ${
-                    aspectRatio === ratio
-                      ? 'border-[#D48B16] bg-[#D48B16]/10 text-[#D48B16]'
-                      : 'border-slate-200 dark:border-slate-700 text-slate-500'
-                  }`}
-                >
-                  <span className="block">{ratio}</span>
-                  <span className="hidden text-[9px] font-normal sm:block">{size}</span>
-                </button>
-              ))}
-            </div>
             {sceneMessage && (
               <p role="status" className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
                 {sceneMessage}
@@ -1076,7 +1053,7 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
 
             {/* Canvas Display Viewport */}
             <div
-              className="relative h-[42vh] min-h-[220px] max-h-[480px] w-full rounded-xl overflow-hidden bg-slate-950 flex items-center justify-center border border-slate-200 dark:border-slate-800 shadow-inner group"
+              className="group relative flex h-[42vh] min-h-[180px] max-h-[42vh] w-full items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-inner dark:border-slate-800 lg:h-[65vh] lg:max-h-[65vh]"
             >
               <canvas
                 ref={canvasRef}
@@ -1124,102 +1101,20 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
               </div>
             </div>
 
-            {generatedScenes.length > 0 && (
-              <section className="rounded-xl border border-slate-200 bg-white p-2.5 dark:border-slate-800 dark:bg-[#0B1528]">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <h3 className="text-xs font-bold text-[#0F2952] dark:text-white">
-                    {isArabic ? `مشاهد الاستوديو المحفوظة (${generatedScenes.length})` : `Saved studio scenes (${generatedScenes.length})`}
-                  </h3>
-                  {previewedAutoScene && (
-                    <span className="truncate text-[10px] text-slate-500">{previewedAutoScene.title}</span>
-                  )}
-                </div>
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {generatedScenes.filter((scene) => scene.imageUrl).map((scene) => (
-                    <button
-                      key={scene.id}
-                      type="button"
-                      onClick={() => setPreviewedAutoSceneId(scene.id)}
-                      aria-label={isArabic ? `معاينة ${scene.title}` : `Preview ${scene.title}`}
-                      className={`w-20 shrink-0 overflow-hidden rounded-lg border text-start ${previewedAutoSceneId === scene.id ? 'border-[#D48B16] ring-2 ring-[#D48B16]/30' : 'border-slate-200 dark:border-slate-700'}`}
-                    >
-                      <img src={scene.imageUrl || ''} alt="" className="h-14 w-full bg-slate-50 object-cover" />
-                      <span className="block truncate px-1.5 py-1 text-[9px] text-slate-600 dark:text-slate-300">{scene.aspectRatio} · {scene.position}</span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {onAdvisorTypeChange && onAdvisorDescriptionChange && onAdvisorSceneChoose && (
-              <SceneAdvisor
-                imageUrl={advisorImageUrl || (subjectImage?.processedUrl || subjectImage?.originalUrl || null)}
-                imageBlob={null}
-                selectedType={advisorProductType}
-                onTypeChange={onAdvisorTypeChange}
-                onDescriptionChange={onAdvisorDescriptionChange}
-                onChoose={onAdvisorSceneChoose}
-                initialDescription={advisorDescription}
-                isArabic={isArabic}
-              />
-            )}
-
-            {/* Subject Selector Strip */}
-            {completedImagesList.length > 0 && (
-              <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-1.5">
-                <span className="text-[11px] font-bold text-slate-500 block">
-                  {isArabic ? 'اختر منتجاً من المعالجات السابقة:' : 'Choose from your isolated items:'}
-                </span>
-                <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                  {completedImagesList.map((img) => (
-                    <button
-                      key={img.id}
-                      onClick={() => {
-                        setSubjectImage(img);
-                        soundEffects.playClick();
-                      }}
-                      className={`relative w-11 h-11 rounded-xl overflow-hidden shrink-0 border-2 transition-all p-0.5 bg-transparency-grid ${
-                        subjectImage?.id === img.id
-                          ? 'border-amber-500 ring-2 ring-amber-500/30 scale-105'
-                          : 'border-slate-200 dark:border-slate-800 opacity-60 hover:opacity-100'
-                      }`}
-                      title={img.name}
-                    >
-                      <img src={img.processedUrl || img.originalUrl} alt="" className="w-full h-full object-contain" />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
           </div>
         </div>
 
-        {/* Right Column: Fluid Collapsible Interactive Cards ("مربعات حوارية") (5 cols on lg) */}
-        <div className="col-span-1 min-h-0 space-y-3.5 pe-1 lg:col-span-5 lg:overflow-y-auto">
-          <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-[#0B1528]">
-            <p className="mb-2 text-sm font-bold text-[#0F2952] dark:text-white">{isArabic ? 'استوديو سريع' : 'Quick studio'}</p>
-            <div className="grid grid-cols-3 gap-2">
-              {([
-                ['clean', 'استوديو أبيض'],
-                ['warmWall', 'حائط دافئ'],
-                ['rusticWood', 'خشب هادئ']
-              ] as const).map(([backdrop, label]) => (
-                <button key={backdrop} type="button" onClick={() => { setQuickBackdrop(backdrop); setBgMode('preset'); }} aria-pressed={quickBackdrop === backdrop} className={`min-h-11 rounded-lg border px-2 text-sm font-semibold ${quickBackdrop === backdrop ? 'border-[#D48B16] bg-[#D48B16]/10 text-[#0F2952] dark:text-amber-300' : 'border-slate-200 dark:border-slate-700'}`}>
-                  {isArabic ? label : backdrop}
-                </button>
-              ))}
-            </div>
-            <label className="mt-2 flex min-h-11 items-center gap-2 text-sm font-semibold">
-              <input type="checkbox" checked={hasShadow} onChange={(event) => setHasShadow(event.target.checked)} />
-              {isArabic ? 'ظل تلقائي ناعم' : 'Auto soft shadow'}
-            </label>
-          </div>
-          <details className="group rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#0B1528]">
-            <summary className="min-h-12 cursor-pointer px-4 py-3 text-sm font-bold text-[#0F2952] focus-visible:outline-[#D48B16] dark:text-white">
-              {isArabic ? 'إعدادات متقدمة' : 'Advanced settings'}
-            </summary>
-            <div className="space-y-3.5 p-2">
+        <ScenePanelTabs activePanel={activeMobilePanel} onChange={setActiveMobilePanel} isArabic={isArabic} />
+
+        <div className="min-h-0 min-w-0 space-y-3.5 pe-1 lg:max-h-[calc(100vh-120px)] lg:overflow-y-auto">
+          <ScenePanel id="background" activePanel={activeMobilePanel}>
+            <QuickBackgroundPanel
+              backdrop={quickBackdrop}
+              hasShadow={hasShadow}
+              isArabic={isArabic}
+              onBackdropChange={(backdrop) => { setQuickBackdrop(backdrop); setBgMode('preset'); }}
+              onShadowChange={setHasShadow}
+            />
           
           {/* Card 1: تدرجات ألوان الخلفية والمشاهد الإعلانية */}
           <div className="bg-white dark:bg-[#0B1528] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden transition-all">
@@ -1488,6 +1383,20 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
             )}
           </div>
 
+          </ScenePanel>
+
+          <ScenePanel id="size" activePanel={activeMobilePanel}>
+            <AspectRatioPanel
+              aspectRatio={aspectRatio}
+              isArabic={isArabic}
+              onChange={(ratio) => {
+                setAspectRatio(ratio);
+                setSceneMessage(null);
+              }}
+            />
+          </ScenePanel>
+
+          <ScenePanel id="product" activePanel={activeMobilePanel}>
           {/* Card 2: أبعاد وموضع ودوران المنتج 360 درجة */}
           <div className="bg-white dark:bg-[#0B1528] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden transition-all">
             <button
@@ -1777,6 +1686,64 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
             )}
           </div>
 
+          {generatedScenes.length > 0 && (
+            <section className="rounded-xl border border-slate-200 bg-white p-2.5 dark:border-slate-800 dark:bg-[#0B1528]">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-[#0F2952] dark:text-white">
+                  {isArabic ? `مشاهد الاستوديو المحفوظة (${generatedScenes.length})` : `Saved studio scenes (${generatedScenes.length})`}
+                </h3>
+                {previewedAutoScene && (
+                  <span className="truncate text-xs text-slate-500">{previewedAutoScene.title}</span>
+                )}
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {generatedScenes.filter((scene) => scene.imageUrl).map((scene) => (
+                  <button
+                    key={scene.id}
+                    type="button"
+                    onClick={() => setPreviewedAutoSceneId(scene.id)}
+                    aria-label={isArabic ? `معاينة ${scene.title}` : `Preview ${scene.title}`}
+                    className={`w-20 shrink-0 overflow-hidden rounded-lg border text-start ${previewedAutoSceneId === scene.id ? 'border-[#D48B16] ring-2 ring-[#D48B16]/30' : 'border-slate-200 dark:border-slate-700'}`}
+                  >
+                    <img src={scene.imageUrl || ''} alt="" className="h-14 w-full bg-slate-50 object-cover" />
+                    <span className="block truncate px-1.5 py-1 text-[11px] text-slate-600 dark:text-slate-300">{scene.aspectRatio} · {scene.position}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {completedImagesList.length > 0 && (
+            <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-[#0B1528]">
+              <span className="block text-sm font-bold text-slate-600 dark:text-slate-300">
+                {isArabic ? 'اختر منتجاً من المعالجات السابقة:' : 'Choose from your isolated items:'}
+              </span>
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                {completedImagesList.map((img) => (
+                  <button
+                    key={img.id}
+                    type="button"
+                    onClick={() => {
+                      setSubjectImage(img);
+                      soundEffects.playClick();
+                    }}
+                    className={`relative h-12 w-12 shrink-0 overflow-hidden rounded-xl border-2 bg-transparency-grid p-0.5 transition-all ${
+                      subjectImage?.id === img.id
+                        ? 'border-amber-500 ring-2 ring-amber-500/30'
+                        : 'border-slate-200 opacity-60 hover:opacity-100 dark:border-slate-800'
+                    }`}
+                    title={img.name}
+                  >
+                    <img src={img.processedUrl || img.originalUrl} alt={img.name} className="h-full w-full object-contain" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          </ScenePanel>
+
+          <ScenePanel id="shadow" activePanel={activeMobilePanel}>
           {/* Card 4: محاكاة الظل الواقعي (Photorealistic Contact Shadow) */}
           <div className="bg-white dark:bg-[#0B1528] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden transition-all">
             <button
@@ -2005,11 +1972,30 @@ export const BackgroundGenerator: React.FC<BackgroundGeneratorProps> = ({
             )}
           </div>
 
-            </div>
-          </details>
+          </ScenePanel>
+
+          <ScenePanel id="smart" activePanel={activeMobilePanel}>
+            <SceneAdvisorPanel
+              imageUrl={advisorImageUrl || (subjectImage?.processedUrl || subjectImage?.originalUrl || null)}
+              selectedType={advisorProductType}
+              initialDescription={advisorDescription}
+              isArabic={isArabic}
+              onTypeChange={onAdvisorTypeChange}
+              onDescriptionChange={onAdvisorDescriptionChange}
+              onChoose={onAdvisorSceneChoose}
+            />
+          </ScenePanel>
         </div>
 
       </div>
+
+      <SceneActionBar
+        isArabic={isArabic}
+        canApply={isSceneReady}
+        canSend={Boolean(subjectImage && isSceneReady)}
+        onApply={handleDownloadComposition}
+        onSend={handleSendToStoryboard}
+      />
 
     </div>
   );

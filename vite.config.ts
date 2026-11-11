@@ -21,6 +21,8 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Allow Cloudflare quick-tunnel demo links (leading dot = any subdomain).
+      allowedHosts: ['.trycloudflare.com'],
     },
     preview: {
       headers: {

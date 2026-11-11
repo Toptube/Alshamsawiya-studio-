@@ -1,6 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import JSZip from 'jszip';
 import type { ProcessedImage, RembgSettings } from '../types';
+import { migrateLegacyMeasures } from '../features/board/dimensionMeasures';
 
 export type ProjectStage = 'removal' | 'supir' | 'generator' | 'storyboard' | 'ads';
 
@@ -65,6 +66,16 @@ class StudioDatabase extends Dexie {
       project.adFrames ||= [];
       project.productDescription ||= '';
       project.materials ||= [];
+    }));
+    this.version(4).stores({
+      projects: 'id, name, createdAt, updatedAt, lastStage',
+      thumbnails: 'projectId',
+      assets: '[projectId+frameId], projectId'
+    }).upgrade((transaction) => transaction.table('projects').toCollection().modify((project: Project) => {
+      project.boardFrames = (project.boardFrames || []).map((frame) => ({
+        ...frame,
+        dimensionMeasures: migrateLegacyMeasures(frame)
+      }));
     }));
   }
 }

@@ -1,23 +1,26 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { 
   Sparkles, Download, Copy, Layers, Sliders, ZoomIn,
-  Camera, Upload
+  Camera, Upload, Eye, EyeOff, Plus, Trash2, List, X, CopyPlus
 } from 'lucide-react';
 import { Arrow, Circle, Group, Layer, Line, Rect, Stage, Text } from 'react-konva';
 import { ProcessedImage } from '../../types';
 import { soundEffects } from '../../shared/lib/audio';
+import {
+  constrainMeasurePoint,
+  convertMeasureValue,
+  createDefaultMeasures,
+  createMeasure,
+  defaultConstraint,
+  isDimensionMeasure,
+  migrateLegacyMeasures,
+  safeLabelRotation,
+  type DimensionMeasure,
+  type MeasureKind,
+  type MeasureUnit
+} from './dimensionMeasures';
 
-interface DimensionPoint {
-  x: number;
-  y: number;
-}
-
-interface DimensionAnnotation {
-  id: 'height' | 'width' | 'depth';
-  start: DimensionPoint;
-  end: DimensionPoint;
-  visible: boolean;
-}
+type DimensionPoint = DimensionMeasure['start'];
 
 interface AlphaBounds {
   width: number;
@@ -27,12 +30,6 @@ interface AlphaBounds {
   right: number;
   bottom: number;
 }
-
-const DIMENSION_LABELS = {
-  height: { ar: 'الارتفاع', en: 'Height' },
-  width: { ar: 'العرض', en: 'Width' },
-  depth: { ar: 'العمق', en: 'Depth' }
-} as const;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -87,7 +84,10 @@ const readAlphaBounds = (url: string): Promise<AlphaBounds> => new Promise((reso
   image.src = url;
 });
 
-const createDefaultAnnotations = (bounds: AlphaBounds, frame: StoryboardFrame): DimensionAnnotation[] => {
+const createDefaultAnnotations = (
+  bounds: AlphaBounds,
+  frame: StoryboardFrame
+): { measures: DimensionMeasure[]; productBounds: { left: number; top: number; right: number; bottom: number } } => {
   const stageWidth = 400;
   const stageHeight = stageWidth / frame.aspectRatioNum;
   const fitScale = Math.min((stageWidth - 24) / bounds.width, (stageHeight - 24) / bounds.height);
@@ -122,47 +122,51 @@ const createDefaultAnnotations = (bounds: AlphaBounds, frame: StoryboardFrame): 
     depthEnd.y = clamp(productTopRight.y + 0.12, 0.08, 0.9);
   }
 
-  return [
-    { id: 'height', start: { x: heightX, y: productTopLeft.y }, end: { x: heightX, y: productBottomRight.y }, visible: true },
-    { id: 'width', start: { x: productTopLeft.x, y: widthY }, end: { x: productBottomRight.x, y: widthY }, visible: true },
-    { id: 'depth', start: depthStart, end: depthEnd, visible: true }
-  ];
-};
-
-const normalizeDimensionAnnotations = (annotations?: DimensionAnnotation[]): DimensionAnnotation[] | undefined => {
-  if (!annotations) return undefined;
-  return annotations.map((annotation) => {
-    const start = { x: clamp(annotation.start.x, 0.04, 0.96), y: clamp(annotation.start.y, 0.04, 0.96) };
-    const end = { x: clamp(annotation.end.x, 0.04, 0.96), y: clamp(annotation.end.y, 0.04, 0.96) };
-    if (annotation.id === 'height') end.x = start.x;
-    if (annotation.id === 'width') end.y = start.y;
-    return { ...annotation, start, end };
+  const measures = createDefaultMeasures({
+    height: frame.dimHeight ?? 24,
+    width: frame.dimWidth ?? 18,
+    depth: frame.dimDepth ?? 9
+  }, frame.dimUnit || 'cm', frame.dimensionColor || '#D48B16', frame.dimensionThickness || 2).map((measure) => {
+    if (measure.kind === 'height') return { ...measure, start: { x: heightX, y: productTopLeft.y }, end: { x: heightX, y: productBottomRight.y } };
+    if (measure.kind === 'width') return { ...measure, start: { x: productTopLeft.x, y: widthY }, end: { x: productBottomRight.x, y: widthY } };
+    return { ...measure, start: depthStart, end: depthEnd };
   });
+  return {
+    measures,
+    productBounds: {
+      left: productTopLeft.x,
+      top: productTopLeft.y,
+      right: productBottomRight.x,
+      bottom: productBottomRight.y
+    }
+  };
 };
 
-const isDimensionAnnotation = (value: unknown): value is DimensionAnnotation => {
-  if (!value || typeof value !== 'object') return false;
-  const annotation = value as Record<string, unknown>;
-  const pointIsValid = (point: unknown) => {
-    if (!point || typeof point !== 'object') return false;
-    const candidate = point as Record<string, unknown>;
-    return typeof candidate.x === 'number' && Number.isFinite(candidate.x)
-      && typeof candidate.y === 'number' && Number.isFinite(candidate.y);
-  };
-  return (annotation.id === 'height' || annotation.id === 'width' || annotation.id === 'depth')
-    && pointIsValid(annotation.start)
-    && pointIsValid(annotation.end)
-    && typeof annotation.visible === 'boolean';
+const normalizeDimensionMeasures = (measures?: DimensionMeasure[]): DimensionMeasure[] | undefined => {
+  if (!measures) return undefined;
+  return measures.map((measure) => {
+    const start = { x: clamp(measure.start.x, 0.04, 0.96), y: clamp(measure.start.y, 0.04, 0.96) };
+    const end = { x: clamp(measure.end.x, 0.04, 0.96), y: clamp(measure.end.y, 0.04, 0.96) };
+    return {
+      ...measure,
+      start,
+      end: constrainMeasurePoint(measure.constraint, end, start)
+    };
+  });
 };
 
 const isSavedDimensionLayout = (
   value: unknown
-): value is Pick<StoryboardFrame, 'dimensionAnnotations' | 'dimensionImageKey'> => {
+): value is Pick<StoryboardFrame, 'dimensionMeasures' | 'dimensionImageKey' | 'dimensionBounds'> => {
   if (!value || typeof value !== 'object') return false;
   const layout = value as Record<string, unknown>;
   return (layout.dimensionImageKey === undefined || typeof layout.dimensionImageKey === 'string')
-    && (layout.dimensionAnnotations === undefined
-      || (Array.isArray(layout.dimensionAnnotations) && layout.dimensionAnnotations.every(isDimensionAnnotation)));
+    && (layout.dimensionBounds === undefined || Boolean(layout.dimensionBounds && typeof layout.dimensionBounds === 'object'
+      && ['left', 'top', 'right', 'bottom'].every((key) =>
+        typeof (layout.dimensionBounds as Record<string, unknown>)[key] === 'number'
+      )))
+    && (layout.dimensionMeasures === undefined
+      || (Array.isArray(layout.dimensionMeasures) && layout.dimensionMeasures.every(isDimensionMeasure)));
 };
 
 interface DimensionStageProps {
@@ -174,18 +178,16 @@ interface DimensionStageProps {
   color: string;
   thickness: number;
   digits: 'latin' | 'arabic';
-  onChange: (id: DimensionAnnotation['id'], update: Partial<DimensionAnnotation>) => void;
+  listMode?: boolean;
+  arrowStyle?: 'arrows' | 'ticks' | 'dots';
+  showNames?: boolean;
+  onChange: (id: string, update: Partial<DimensionMeasure>) => void;
 }
 
 const DimensionStage: React.FC<DimensionStageProps> = ({
-  frame, width, height, isArabic, unitLabel, color, thickness, digits, onChange
+  frame, width, height, isArabic, unitLabel, color, thickness, digits, listMode = false, arrowStyle = 'arrows', showNames = true, onChange
 }) => {
   const scale = width / 400;
-  const values = {
-    height: frame.dimHeight ?? 24,
-    width: frame.dimWidth ?? 18,
-    depth: frame.dimDepth ?? 9
-  };
   const formatValue = (value: number) => {
     const formatted = Number.isInteger(value) ? String(value) : value.toFixed(1);
     return digits === 'arabic' ? formatted.replace(/\d/g, (digit) => '٠١٢٣٤٥٦٧٨٩'[Number(digit)]) : formatted;
@@ -194,7 +196,7 @@ const DimensionStage: React.FC<DimensionStageProps> = ({
   return (
     <Stage width={width} height={height} className="absolute inset-0">
       <Layer>
-        {(frame.dimensionAnnotations || []).map((annotation) => {
+        {(frame.dimensionMeasures || []).map((annotation) => {
           if (!annotation.visible) return null;
           const x1 = annotation.start.x * width;
           const y1 = annotation.start.y * height;
@@ -202,7 +204,7 @@ const DimensionStage: React.FC<DimensionStageProps> = ({
           const y2 = annotation.end.y * height;
           const middleX = (x1 + x2) / 2;
           const middleY = (y1 + y2) / 2;
-          const label = `${DIMENSION_LABELS[annotation.id][isArabic ? 'ar' : 'en']}: ${formatValue(values[annotation.id])} ${unitLabel}`;
+          const label = `${(annotation.showName && showNames) ? `${annotation.label}: ` : ''}${formatValue(annotation.value)} ${unitLabel}`;
           const fontSize = Math.max(9, 12 * scale);
           const pillWidth = Math.max(84 * scale, label.length * fontSize * 0.58 + 18 * scale);
           const pillHeight = Math.max(24 * scale, 28 * scale);
@@ -214,12 +216,12 @@ const DimensionStage: React.FC<DimensionStageProps> = ({
           const normalY = (dx / length) * extension;
           const constrainedMove = (point: 'start' | 'end', x: number, y: number) => {
             const other = annotation[point === 'start' ? 'end' : 'start'];
-            onChange(annotation.id, {
-              [point]: {
-                x: annotation.id === 'height' ? other.x : clamp(x / width, 0.04, 0.96),
-                y: annotation.id === 'width' ? other.y : clamp(y / height, 0.04, 0.96)
-              }
-            });
+            const nextPoint = constrainMeasurePoint(
+              annotation.constraint,
+              { x: clamp(x / width, 0.04, 0.96), y: clamp(y / height, 0.04, 0.96) },
+              other
+            );
+            onChange(annotation.id, { [point]: nextPoint });
           };
           const groupMove = (event: { currentTarget: { x: () => number; y: () => number; position: (p: { x: number; y: number }) => void } }) => {
             const group = event.currentTarget;
@@ -248,6 +250,28 @@ const DimensionStage: React.FC<DimensionStageProps> = ({
             group.position({ x: 0, y: 0 });
           };
 
+          if (listMode) {
+            return (
+              <Group key={annotation.id} x={12 * scale} y={(12 + (frame.dimensionMeasures || []).filter((item) => item.visible).indexOf(annotation) * 24) * scale}>
+                <Rect width={width * 0.42} height={22 * scale} cornerRadius={4 * scale} fill="#0F2952" opacity={0.9} />
+                <Text
+                  x={4 * scale}
+                  width={width * 0.42 - 8 * scale}
+                  height={22 * scale}
+                  text={label}
+                  fontSize={Math.max(9, 11 * scale)}
+                  fontStyle="bold"
+                  fill={annotation.color || color}
+                  verticalAlign="middle"
+                  direction={isArabic ? 'rtl' : 'ltr'}
+                />
+              </Group>
+            );
+          }
+          const labelAngle = safeLabelRotation({ x: x1, y: y1 }, { x: x2, y: y2 });
+          const labelOffset = annotation.labelOffset * scale;
+          const labelX = middleX + normalX + (-dy / length) * labelOffset;
+          const labelY = middleY + normalY + (dx / length) * labelOffset;
           return (
             <Group key={annotation.id}>
               <Group
@@ -256,49 +280,32 @@ const DimensionStage: React.FC<DimensionStageProps> = ({
                 onMouseEnter={(event) => { event.target.getStage()?.container().style.setProperty('cursor', 'grab'); }}
                 onMouseLeave={(event) => { event.target.getStage()?.container().style.setProperty('cursor', 'default'); }}
               >
-                <Line points={[x1, y1, x1 + normalX, y1 + normalY]} stroke={color} strokeWidth={thickness * scale} />
-                <Line points={[x2, y2, x2 + normalX, y2 + normalY]} stroke={color} strokeWidth={thickness * scale} />
-                <Arrow
-                  points={[x1, y1, x2, y2]}
-                  stroke={color}
-                  fill={color}
-                  strokeWidth={thickness * scale}
-                  pointerLength={8 * scale}
-                  pointerWidth={8 * scale}
-                  pointerAtBeginning
-                  pointerAtEnding
-                  hitStrokeWidth={18 * scale}
-                />
-                <Rect
-                  x={middleX - pillWidth / 2}
-                  y={middleY - pillHeight / 2}
-                  width={pillWidth}
-                  height={pillHeight}
-                  cornerRadius={8 * scale}
-                  fill="#0F2952"
-                  stroke={color}
-                  strokeWidth={Math.max(1, thickness * scale * 0.65)}
-                />
-                <Text
-                  x={middleX - pillWidth / 2}
-                  y={middleY - pillHeight / 2}
-                  width={pillWidth}
-                  height={pillHeight}
-                  text={label}
-                  align="center"
-                  verticalAlign="middle"
-                  fontSize={fontSize}
-                  fontStyle="bold"
-                  fill="#FFFFFF"
-                  listening={false}
-                />
+                <Line points={[x1, y1, x1 + normalX, y1 + normalY]} stroke={annotation.color || color} strokeWidth={(annotation.thickness || thickness) * scale} />
+                <Line points={[x2, y2, x2 + normalX, y2 + normalY]} stroke={annotation.color || color} strokeWidth={(annotation.thickness || thickness) * scale} />
+                {arrowStyle === 'arrows' ? (
+                  <Arrow points={[x1, y1, x2, y2]} stroke={annotation.color || color} fill={annotation.color || color} strokeWidth={(annotation.thickness || thickness) * scale} pointerLength={8 * scale} pointerWidth={8 * scale} pointerAtBeginning pointerAtEnding hitStrokeWidth={18 * scale} />
+                ) : (
+                  <Line points={[x1, y1, x2, y2]} stroke={annotation.color || color} strokeWidth={(annotation.thickness || thickness) * scale} hitStrokeWidth={18 * scale} />
+                )}
+                {arrowStyle === 'ticks' && <>
+                  <Line points={[x1 - normalX * 0.3, y1 - normalY * 0.3, x1 + normalX * 0.3, y1 + normalY * 0.3]} stroke={annotation.color || color} strokeWidth={(annotation.thickness || thickness) * scale} />
+                  <Line points={[x2 - normalX * 0.3, y2 - normalY * 0.3, x2 + normalX * 0.3, y2 + normalY * 0.3]} stroke={annotation.color || color} strokeWidth={(annotation.thickness || thickness) * scale} />
+                </>}
+                {arrowStyle === 'dots' && <>
+                  <Circle x={x1} y={y1} radius={3 * scale} fill={annotation.color || color} />
+                  <Circle x={x2} y={y2} radius={3 * scale} fill={annotation.color || color} />
+                </>}
+                <Group x={labelX} y={labelY} rotation={labelAngle} listening={false}>
+                  <Rect x={-pillWidth / 2} y={-pillHeight / 2} width={pillWidth} height={pillHeight} cornerRadius={8 * scale} fill="#0F2952" stroke={annotation.color || color} strokeWidth={Math.max(1, (annotation.thickness || thickness) * scale * 0.65)} />
+                  <Text x={-pillWidth / 2} y={-pillHeight / 2} width={pillWidth} height={pillHeight} text={label} align="center" verticalAlign="middle" fontSize={fontSize} fontStyle="bold" fill="#FFFFFF" direction={isArabic ? 'rtl' : 'ltr'} />
+                </Group>
               </Group>
               <Circle
                 x={x1}
                 y={y1}
                 radius={7 * scale}
                 fill="#FFFFFF"
-                stroke={color}
+                stroke={annotation.color || color}
                 strokeWidth={2 * scale}
                 draggable
                 hitStrokeWidth={14 * scale}
@@ -311,7 +318,7 @@ const DimensionStage: React.FC<DimensionStageProps> = ({
                 y={y2}
                 radius={7 * scale}
                 fill="#FFFFFF"
-                stroke={color}
+                stroke={annotation.color || color}
                 strokeWidth={2 * scale}
                 draggable
                 hitStrokeWidth={14 * scale}
@@ -358,27 +365,44 @@ const drawDimensionAnnotations = (
   unitLabel: string,
   color: string,
   thickness: number,
-  digits: 'latin' | 'arabic'
+  digits: 'latin' | 'arabic',
+  options: { listMode: boolean; arrowStyle: 'arrows' | 'ticks' | 'dots'; showNames: boolean }
 ) => {
   const scale = rect.w / 400;
-  const values = {
-    height: frame.dimHeight ?? 24,
-    width: frame.dimWidth ?? 18,
-    depth: frame.dimDepth ?? 9
-  };
   const formatValue = (value: number) => {
     const formatted = Number.isInteger(value) ? String(value) : value.toFixed(1);
     return digits === 'arabic' ? formatted.replace(/\d/g, (digit) => '٠١٢٣٤٥٦٧٨٩'[Number(digit)]) : formatted;
   };
+  const visibleMeasures = (frame.dimensionMeasures || []).filter((measure) => measure.visible);
   context.save();
-  context.strokeStyle = color;
-  context.fillStyle = color;
-  context.lineWidth = thickness * scale;
   context.lineCap = 'round';
   context.lineJoin = 'round';
 
-  for (const annotation of frame.dimensionAnnotations || []) {
-    if (!annotation.visible) continue;
+  if (options.listMode) {
+    const x = rect.x + rect.w * 0.04;
+    const y = rect.y + rect.h * 0.04;
+    const rowHeight = 24 * scale;
+    const tableWidth = Math.min(rect.w * 0.42, 300 * scale);
+    visibleMeasures.forEach((measure, index) => {
+      const rowY = y + index * rowHeight;
+      const label = `${options.showNames && measure.showName ? `${measure.label}: ` : ''}${formatValue(measure.value)} ${unitLabel}`;
+      context.fillStyle = 'rgba(15, 41, 82, 0.92)';
+      context.fillRect(x, rowY, tableWidth, rowHeight);
+      context.strokeStyle = measure.color || color;
+      context.lineWidth = Math.max(1, (measure.thickness || thickness) * scale);
+      context.strokeRect(x, rowY, tableWidth, rowHeight);
+      context.fillStyle = '#FFFFFF';
+      context.font = `bold ${Math.max(9, 11 * scale)}px Cairo, sans-serif`;
+      context.direction = isArabic ? 'rtl' : 'ltr';
+      context.textAlign = isArabic ? 'right' : 'left';
+      context.textBaseline = 'middle';
+      context.fillText(label, isArabic ? x + tableWidth - 6 * scale : x + 6 * scale, rowY + rowHeight / 2, tableWidth - 12 * scale);
+    });
+    context.restore();
+    return;
+  }
+
+  for (const annotation of visibleMeasures) {
     const x1 = rect.x + annotation.start.x * rect.w;
     const y1 = rect.y + annotation.start.y * rect.h;
     const x2 = rect.x + annotation.end.x * rect.w;
@@ -390,10 +414,15 @@ const drawDimensionAnnotations = (
     const normalY = (dx / length) * 18 * scale;
     const midX = (x1 + x2) / 2;
     const midY = (y1 + y2) / 2;
-    const label = `${DIMENSION_LABELS[annotation.id][isArabic ? 'ar' : 'en']}: ${formatValue(values[annotation.id])} ${unitLabel}`;
+    const label = `${options.showNames && annotation.showName ? `${annotation.label}: ` : ''}${formatValue(annotation.value)} ${unitLabel}`;
     const fontSize = Math.max(9, 12 * scale);
+    const annotationColor = annotation.color || color;
+    const annotationThickness = annotation.thickness || thickness;
 
     context.beginPath();
+    context.strokeStyle = annotationColor;
+    context.fillStyle = annotationColor;
+    context.lineWidth = annotationThickness * scale;
     context.moveTo(x1, y1);
     context.lineTo(x1 + normalX, y1 + normalY);
     context.moveTo(x2, y2);
@@ -414,31 +443,53 @@ const drawDimensionAnnotations = (
       context.closePath();
       context.fill();
     };
-    arrowHead(x1, y1, x2, y2);
-    arrowHead(x2, y2, x1, y1);
+    if (options.arrowStyle === 'arrows') {
+      arrowHead(x1, y1, x2, y2);
+      arrowHead(x2, y2, x1, y1);
+    } else if (options.arrowStyle === 'ticks') {
+      context.beginPath();
+      context.moveTo(x1 - normalX * 0.3, y1 - normalY * 0.3);
+      context.lineTo(x1 + normalX * 0.3, y1 + normalY * 0.3);
+      context.moveTo(x2 - normalX * 0.3, y2 - normalY * 0.3);
+      context.lineTo(x2 + normalX * 0.3, y2 + normalY * 0.3);
+      context.stroke();
+    } else {
+      context.beginPath();
+      context.arc(x1, y1, 3 * scale, 0, Math.PI * 2);
+      context.arc(x2, y2, 3 * scale, 0, Math.PI * 2);
+      context.fillStyle = annotationColor;
+      context.fill();
+    }
 
     context.font = `bold ${fontSize}px Cairo, sans-serif`;
     context.direction = isArabic ? 'rtl' : 'ltr';
     const pillWidth = Math.max(84 * scale, context.measureText(label).width + 18 * scale);
     const pillHeight = 28 * scale;
+    const labelAngle = safeLabelRotation({ x: x1, y: y1 }, { x: x2, y: y2 }) * Math.PI / 180;
+    const labelX = midX + normalX + (-dy / length) * annotation.labelOffset * scale;
+    const labelY = midY + normalY + (dx / length) * annotation.labelOffset * scale;
+    context.save();
+    context.translate(labelX, labelY);
+    context.rotate(labelAngle);
     context.fillStyle = '#0F2952';
     context.beginPath();
-    context.roundRect(midX - pillWidth / 2, midY - pillHeight / 2, pillWidth, pillHeight, 8 * scale);
+    context.roundRect(-pillWidth / 2, -pillHeight / 2, pillWidth, pillHeight, 8 * scale);
     context.fill();
-    context.strokeStyle = color;
-    context.lineWidth = Math.max(1, thickness * scale * 0.65);
+    context.strokeStyle = annotationColor;
+    context.lineWidth = Math.max(1, annotationThickness * scale * 0.65);
     context.stroke();
     context.fillStyle = '#FFFFFF';
     context.textAlign = 'center';
     context.textBaseline = 'middle';
-    context.fillText(label, midX, midY);
+    context.fillText(label, 0, 0);
+    context.restore();
 
     for (const [x, y] of [[x1, y1], [x2, y2]] as const) {
       context.beginPath();
-      context.arc(x, y, 4 * scale, 0, Math.PI * 2);
+      context.arc(x, y, 7 * scale, 0, Math.PI * 2);
       context.fillStyle = '#FFFFFF';
       context.fill();
-      context.strokeStyle = color;
+      context.strokeStyle = annotationColor;
       context.lineWidth = 2 * scale;
       context.stroke();
     }
@@ -468,8 +519,15 @@ export interface StoryboardFrame {
   dimWidth?: number;
   dimDepth?: number;
   dimUnit?: 'cm' | 'mm' | 'in';
-  dimensionAnnotations?: DimensionAnnotation[];
+  dimensionMeasures?: DimensionMeasure[];
+  dimensionBounds?: { left: number; top: number; right: number; bottom: number };
+  dimensionAnnotations?: Array<{ id: 'height' | 'width' | 'depth'; start: DimensionPoint; end: DimensionPoint; visible: boolean }>;
   dimensionImageKey?: string;
+  dimensionColor?: string;
+  dimensionThickness?: number;
+  dimensionArrowStyle?: 'arrows' | 'ticks' | 'dots';
+  dimensionListMode?: boolean;
+  dimensionShowNames?: boolean;
   macroCallout?: string;
 }
 
@@ -570,12 +628,12 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
     // Populate frames initially with the first available processed images if present
     const completed = images.filter((img) => img.status === 'completed' && img.processedUrl);
     const primaryUrl = completed[0]?.processedUrl || images[0]?.originalUrl || null;
-    let savedLayouts: Record<string, Pick<StoryboardFrame, 'dimensionAnnotations' | 'dimensionImageKey'>> = {};
+    let savedLayouts: Record<string, Pick<StoryboardFrame, 'dimensionMeasures' | 'dimensionImageKey' | 'dimensionBounds'>> = {};
     try {
       const parsed: unknown = JSON.parse(localStorage.getItem('alshams_board_dimensions') || '{}');
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         savedLayouts = Object.fromEntries(
-          Object.entries(parsed).filter((entry): entry is [string, Pick<StoryboardFrame, 'dimensionAnnotations' | 'dimensionImageKey'>] =>
+          Object.entries(parsed).filter((entry): entry is [string, Pick<StoryboardFrame, 'dimensionMeasures' | 'dimensionImageKey' | 'dimensionBounds'>] =>
             isSavedDimensionLayout(entry[1])
           )
         );
@@ -597,7 +655,11 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
         ...restoredFrame,
         imageUrl: completed[idx]?.processedUrl || primaryUrl,
         ...(restoredFrame?.imageUrl ? { imageUrl: restoredFrame.imageUrl } : {}),
-        dimensionAnnotations: normalizeDimensionAnnotations(restoredFrame?.dimensionAnnotations || savedLayout?.dimensionAnnotations)
+        dimensionMeasures: normalizeDimensionMeasures(migrateLegacyMeasures({
+          ...f,
+          ...savedLayout,
+          ...restoredFrame
+        }))
       };
     });
   });
@@ -609,6 +671,15 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
   const [dimensionColor, setDimensionColor] = useState(String(initialBoardDimensions?.color || '#D48B16'));
   const [dimensionThickness, setDimensionThickness] = useState(Number(initialBoardDimensions?.thickness || 2));
   const [digitStyle, setDigitStyle] = useState<'latin' | 'arabic'>(initialBoardDimensions?.digits === 'arabic' ? 'arabic' : 'latin');
+  const [dimensionArrowStyle, setDimensionArrowStyle] = useState<'arrows' | 'ticks' | 'dots'>(
+    initialBoardDimensions?.arrowStyle === 'ticks' || initialBoardDimensions?.arrowStyle === 'dots' ? initialBoardDimensions.arrowStyle : 'arrows'
+  );
+  const [dimensionListMode, setDimensionListMode] = useState(Number(initialBoardDimensions?.listMode ?? 0) !== 0);
+  const [dimensionShowNames, setDimensionShowNames] = useState(Number(initialBoardDimensions?.showNames ?? 1) !== 0);
+  const [showAddMeasure, setShowAddMeasure] = useState(false);
+  const [newMeasureKind, setNewMeasureKind] = useState<MeasureKind | null>(null);
+  const [newMeasureName, setNewMeasureName] = useState('');
+  const [newMeasureValue, setNewMeasureValue] = useState('');
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const compositeCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -633,23 +704,30 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
       visible: dimensionsVisible ? 1 : 0,
       color: dimensionColor,
       thickness: dimensionThickness,
-      digits: digitStyle
+      digits: digitStyle,
+      arrowStyle: dimensionArrowStyle,
+      listMode: dimensionListMode ? 1 : 0,
+      showNames: dimensionShowNames ? 1 : 0
     });
-  }, [onBoardStateChange, frames, activeFrameId, dimensionsVisible, dimensionColor, dimensionThickness, digitStyle]);
+  }, [onBoardStateChange, frames, activeFrameId, dimensionsVisible, dimensionColor, dimensionThickness, digitStyle, dimensionArrowStyle, dimensionListMode, dimensionShowNames]);
 
   useEffect(() => {
     let cancelled = false;
-    const pending = frames.filter((frame) => frame.imageUrl && frame.dimensionImageKey !== imageKey(frame.imageUrl));
+    const pending = frames.filter((frame) =>
+      frame.imageUrl && (frame.dimensionImageKey !== imageKey(frame.imageUrl) || !frame.dimensionBounds)
+    );
     for (const frame of pending) {
       if (!frame.imageUrl) continue;
       const sourceUrl = frame.imageUrl;
       void readAlphaBounds(sourceUrl).then((bounds) => {
         if (cancelled) return;
+        const defaults = createDefaultAnnotations(bounds, frame);
         setFrames((current) => current.map((item) => item.id === frame.id && item.imageUrl === sourceUrl
           ? {
             ...item,
             dimensionImageKey: imageKey(sourceUrl),
-            dimensionAnnotations: createDefaultAnnotations(bounds, item)
+            dimensionMeasures: item.dimensionMeasures?.length ? item.dimensionMeasures : defaults.measures,
+            dimensionBounds: defaults.productBounds
           }
           : item));
       }).catch((error: unknown) => {
@@ -666,7 +744,8 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
       localStorage.setItem('alshams_board_dimensions', JSON.stringify(Object.fromEntries(
         frames.map((frame) => [frame.id, {
           dimensionImageKey: frame.dimensionImageKey,
-          dimensionAnnotations: frame.dimensionAnnotations
+          dimensionMeasures: frame.dimensionMeasures,
+          dimensionBounds: frame.dimensionBounds
         }])
       )));
     } catch {
@@ -736,31 +815,93 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
     );
   };
 
-  const updateActiveDimensions = (partial: Partial<Pick<StoryboardFrame, 'dimHeight' | 'dimWidth' | 'dimDepth' | 'dimUnit'>>) => {
-    setFrames((prev) => prev.map((frame) => frame.id === activeFrameId ? { ...frame, ...partial } : frame));
-  };
-
-  const updateDimensionAnnotation = (frameId: string, annotationId: DimensionAnnotation['id'], update: Partial<DimensionAnnotation>) => {
+  const updateDimensionMeasure = (frameId: string, measureId: string, update: Partial<DimensionMeasure>) => {
     setFrames((prev) => prev.map((frame) => frame.id === frameId
       ? {
         ...frame,
-        dimensionAnnotations: (frame.dimensionAnnotations || []).map((annotation) =>
-          annotation.id === annotationId ? { ...annotation, ...update } : annotation
+        dimensionMeasures: (frame.dimensionMeasures || []).map((measure) =>
+          measure.id === measureId ? { ...measure, ...update } : measure
         )
       }
       : frame));
   };
 
-  const changeDimensionUnit = (unit: NonNullable<StoryboardFrame['dimUnit']>) => {
-    const factors = { cm: 1, mm: 10, in: 1 / 2.54 };
-    const sourceUnit = activeFrame.dimUnit || 'cm';
-    const conversion = factors[unit] / factors[sourceUnit];
-    updateActiveDimensions({
-      dimUnit: unit,
-      dimHeight: Number(((activeFrame.dimHeight ?? 24) * conversion).toFixed(1)),
-      dimWidth: Number(((activeFrame.dimWidth ?? 18) * conversion).toFixed(1)),
-      dimDepth: Number(((activeFrame.dimDepth ?? 9) * conversion).toFixed(1))
-    });
+  const changeDimensionUnit = (unit: MeasureUnit) => {
+    setFrames((previous) => previous.map((frame) => {
+      const sourceUnit = frame.dimUnit || 'cm';
+      return {
+        ...frame,
+        dimUnit: unit,
+        dimHeight: convertMeasureValue(frame.dimHeight ?? 24, sourceUnit, unit),
+        dimWidth: convertMeasureValue(frame.dimWidth ?? 18, sourceUnit, unit),
+        dimDepth: convertMeasureValue(frame.dimDepth ?? 9, sourceUnit, unit),
+        dimensionMeasures: (frame.dimensionMeasures || []).map((measure) => ({
+          ...measure,
+          value: convertMeasureValue(measure.value, measure.unit, unit),
+          unit
+        }))
+      };
+    }));
+  };
+
+  const setGlobalDimensionColor = (color: string) => {
+    setDimensionColor(color);
+    setFrames((previous) => previous.map((frame) => ({
+      ...frame,
+      dimensionColor: color,
+      dimensionMeasures: (frame.dimensionMeasures || []).map((measure) => ({ ...measure, color }))
+    })));
+  };
+
+  const setGlobalDimensionThickness = (thickness: number) => {
+    setDimensionThickness(thickness);
+    setFrames((previous) => previous.map((frame) => ({
+      ...frame,
+      dimensionThickness: thickness,
+      dimensionMeasures: (frame.dimensionMeasures || []).map((measure) => ({ ...measure, thickness }))
+    })));
+  };
+
+  const setAllMeasuresVisible = (visible: boolean) => {
+    setFrames((previous) => previous.map((frame) => ({
+      ...frame,
+      dimensionMeasures: (frame.dimensionMeasures || []).map((measure) => ({ ...measure, visible }))
+    })));
+  };
+
+  const addDimensionMeasure = () => {
+    if (!newMeasureKind || !Number.isFinite(Number(newMeasureValue)) || Number(newMeasureValue) < 0) return;
+    const sameKind = activeFrame.dimensionMeasures?.filter((measure) => measure.kind === newMeasureKind) || [];
+    const baseName = newMeasureName.trim() || ({
+      height: 'الارتفاع',
+      width: 'العرض',
+      length: 'الطول',
+      depth: 'العمق',
+      diameter: 'القطر',
+      side: 'الجانب',
+      strap: 'الحزام',
+      drop: 'السقوط',
+      tier: 'الطبقة/الدور',
+      custom: 'مقاس مخصص'
+    } satisfies Record<MeasureKind, string>)[newMeasureKind];
+    const label = sameKind.length > 0 ? `${baseName} ${sameKind.length + 1}` : baseName;
+    const measure = createMeasure(
+      newMeasureKind,
+      label,
+      Number(newMeasureValue),
+      activeFrame.dimUnit || 'cm',
+      sameKind.length,
+      dimensionColor,
+      dimensionThickness,
+      activeFrame.dimensionBounds
+    );
+    setFrames((previous) => previous.map((frame) => frame.id === activeFrame.id
+      ? { ...frame, dimensionMeasures: [...(frame.dimensionMeasures || []), measure] }
+      : frame));
+    setNewMeasureKind(null);
+    setNewMeasureName('');
+    setNewMeasureValue('');
+    setShowAddMeasure(false);
   };
 
   // Export Combined Composite Storyboard Collage (2400 x 2400 UHD 2x2 Grid via Native Canvas)
@@ -890,7 +1031,8 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
           dimensionUnitLabel(frameData.dimUnit),
           dimensionColor,
           dimensionThickness,
-          digitStyle
+          digitStyle,
+          { listMode: dimensionListMode, arrowStyle: dimensionArrowStyle, showNames: dimensionShowNames }
         );
       }
 
@@ -1075,27 +1217,6 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
               />
             )}
             {dimensionsVisible && activeFrame.imageUrl && (
-              <div className="hidden">
-                <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
-                  <path d="M12 16V84 M8 18L12 14L16 18 M8 82L12 86L16 82 M18 86H82 M20 82L16 86L20 90 M80 82L84 86L80 90 M70 16L84 28"
-                    fill="none" stroke="#D48B16" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-                </svg>
-                <span className="self-end rounded bg-[#0F2952]/90 px-2 py-0.5 text-[10px] font-bold text-amber-300">
-                  ↗ {activeFrame.dimDepth ?? 9} {dimensionUnitLabel(activeFrame.dimUnit)}
-                </span>
-                <div className="absolute inset-y-5 start-2 flex items-center">
-                  <span className="rounded border border-[#D48B16] bg-[#0F2952]/90 px-2 py-1 text-[10px] font-bold text-white [writing-mode:vertical-rl]">
-                    ↕ {activeFrame.dimHeight ?? 24} {dimensionUnitLabel(activeFrame.dimUnit)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-center border-t border-[#D48B16] pt-1">
-                  <span className="rounded border border-[#D48B16] bg-[#0F2952]/90 px-2 py-0.5 text-[10px] font-bold text-white">
-                    ↔ {activeFrame.dimWidth ?? 18} {dimensionUnitLabel(activeFrame.dimUnit)}
-                  </span>
-                </div>
-              </div>
-            )}
-            {dimensionsVisible && activeFrame.imageUrl && (
               <ResponsiveDimensionStage
                 frame={activeFrame}
                 isArabic={isArabic}
@@ -1103,7 +1224,10 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
                 color={dimensionColor}
                 thickness={dimensionThickness}
                 digits={digitStyle}
-                onChange={(id, update) => updateDimensionAnnotation(activeFrame.id, id, update)}
+                listMode={dimensionListMode}
+                arrowStyle={dimensionArrowStyle}
+                showNames={dimensionShowNames}
+                onChange={(id, update) => updateDimensionMeasure(activeFrame.id, id, update)}
               />
             )}
           </div>
@@ -1290,43 +1414,6 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
                       </div>
                     )}
 
-                    {/* Interactive Architectural Dimensions Overlay with Lines & Arrows */}
-                    {dimensionsVisible && frame.imageUrl && (frame.type === 'technical' || frame.id === activeFrameId) && (
-                      <div className="hidden">
-                        {/* Depth Tag (Top Right) */}
-                        <div className="flex justify-end">
-                          <div className="px-2 py-0.5 rounded-md bg-[#0F2952]/90 backdrop-blur-xs border border-[#D48B16]/60 text-[9px] font-mono text-amber-300 font-bold shadow-md">
-                            ⤢ {isArabic ? 'العمق' : 'Depth'}: {frame.dimDepth || 9} {dimensionUnitLabel(frame.dimUnit)}
-                          </div>
-                        </div>
-
-                        {/* Height Dimension Line & Arrows (Start/Left) */}
-                        <div className="absolute inset-y-6 start-2 flex flex-col items-center justify-between">
-                          <div className="w-2.5 h-[1.5px] bg-[#D48B16]" />
-                          <div className="relative flex-1 w-[1.5px] bg-[#D48B16] flex items-center justify-center">
-                            <div className="absolute top-0 w-0 h-0 border-l-[3px] border-l-transparent border-r-[3px] border-r-transparent border-b-[5px] border-b-[#D48B16]" />
-                            <span className="bg-[#0F2952]/95 border border-[#D48B16] text-white text-[9px] font-mono font-bold px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap transform -rotate-90">
-                              ↕ {frame.dimHeight || 24} {dimensionUnitLabel(frame.dimUnit)}
-                            </span>
-                            <div className="absolute bottom-0 w-0 h-0 border-l-[3px] border-l-transparent border-r-[3px] border-r-transparent border-t-[5px] border-t-[#D48B16]" />
-                          </div>
-                          <div className="w-2.5 h-[1.5px] bg-[#D48B16]" />
-                        </div>
-
-                        {/* Width Dimension Line & Arrows (Bottom) */}
-                        <div className="mt-auto ps-6 pe-2 pb-1 flex items-center justify-between">
-                          <div className="h-2.5 w-[1.5px] bg-[#D48B16]" />
-                          <div className="relative flex-1 h-[1.5px] bg-[#D48B16] flex items-center justify-center mx-1">
-                            <div className="absolute start-0 w-0 h-0 border-t-[3px] border-t-transparent border-b-[3px] border-b-transparent border-e-[5px] border-e-[#D48B16]" />
-                            <span className="bg-[#0F2952]/95 border border-[#D48B16] text-white text-[9px] font-mono font-bold px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap">
-                              ↔ {frame.dimWidth || 18} {dimensionUnitLabel(frame.dimUnit)}
-                            </span>
-                            <div className="absolute end-0 w-0 h-0 border-t-[3px] border-t-transparent border-b-[3px] border-b-transparent border-s-[5px] border-s-[#D48B16]" />
-                          </div>
-                          <div className="h-2.5 w-[1.5px] bg-[#D48B16]" />
-                        </div>
-                      </div>
-                    )}
                     {dimensionsVisible && frame.imageUrl && (
                       <ResponsiveDimensionStage
                         frame={frame}
@@ -1335,7 +1422,10 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
                         color={dimensionColor}
                         thickness={dimensionThickness}
                         digits={digitStyle}
-                        onChange={(id, update) => updateDimensionAnnotation(frame.id, id, update)}
+                        listMode={dimensionListMode}
+                        arrowStyle={dimensionArrowStyle}
+                        showNames={dimensionShowNames}
+                        onChange={(id, update) => updateDimensionMeasure(frame.id, id, update)}
                       />
                     )}
 
@@ -1460,158 +1550,137 @@ export const StoryboardWorkspace: React.FC<StoryboardWorkspaceProps> = ({
                 </div>
               </div>
 
-              <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                      {isArabic ? 'مقاسات المنتج' : 'Product dimensions'}
-                    </label>
-                    <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg text-[10px]">
-                      {(['cm', 'mm', 'in'] as const).map((unit) => (
-                        <button
-                          key={unit}
-                          onClick={() => changeDimensionUnit(unit)}
-                          className={`px-2 py-0.5 rounded font-bold transition-colors cursor-pointer ${
-                            (activeFrame.dimUnit || 'cm') === unit
-                              ? 'bg-[#D48B16] text-slate-950 shadow-xs'
-                              : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
-                          }`}
-                        >
-                          {unit === 'cm' ? (isArabic ? 'سم' : 'cm') : unit === 'mm' ? (isArabic ? 'مم' : 'mm') : (isArabic ? 'بوصة' : 'in')}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    {/* الارتفاع (Height) */}
-                    <div className="space-y-1">
-                      <span className="text-[11px] text-slate-500 block">
-                        {isArabic ? 'الارتفاع' : 'Height'}
-                      </span>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          min="1"
-                          max="999"
-                          value={activeFrame.dimHeight ?? 24}
-                          onChange={(e) => updateActiveDimensions({ dimHeight: Number(e.target.value) || 0 })}
-                          className="w-full pe-7 ps-1 py-2 text-center rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 font-mono text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-[#D48B16]"
-                        />
-                        <span className="absolute end-1.5 top-2 text-[9px] text-slate-400 font-mono pointer-events-none">
-                          {dimensionUnitLabel(activeFrame.dimUnit)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* العرض (Width) */}
-                    <div className="space-y-1">
-                      <span className="text-[11px] text-slate-500 block">
-                        {isArabic ? 'العرض' : 'Width'}
-                      </span>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          min="1"
-                          max="999"
-                          value={activeFrame.dimWidth ?? 18}
-                          onChange={(e) => updateActiveDimensions({ dimWidth: Number(e.target.value) || 0 })}
-                          className="w-full pe-7 ps-1 py-2 text-center rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 font-mono text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-[#D48B16]"
-                        />
-                        <span className="absolute end-1.5 top-2 text-[9px] text-slate-400 font-mono pointer-events-none">
-                          {dimensionUnitLabel(activeFrame.dimUnit)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* العمق (Depth) */}
-                    <div className="space-y-1">
-                      <span className="text-[11px] text-slate-500 block">
-                        {isArabic ? 'العمق' : 'Depth'}
-                      </span>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          min="1"
-                          max="999"
-                          value={activeFrame.dimDepth ?? 9}
-                          onChange={(e) => updateActiveDimensions({ dimDepth: Number(e.target.value) || 0 })}
-                          className="w-full pe-7 ps-1 py-2 text-center rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 font-mono text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-[#D48B16]"
-                        />
-                        <span className="absolute end-1.5 top-2 text-[9px] text-slate-400 font-mono pointer-events-none">
-                          {dimensionUnitLabel(activeFrame.dimUnit)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-3 border-t border-slate-100 pt-3 dark:border-slate-800">
-                  <div className="grid grid-cols-3 gap-1">
-                    {(['height', 'width', 'depth'] as const).map((id) => {
-                      const annotation = activeFrame.dimensionAnnotations?.find((item) => item.id === id);
-                      const visible = annotation?.visible ?? true;
-                      return (
-                        <button
-                          key={id}
-                          type="button"
-                          aria-pressed={visible}
-                          onClick={() => updateDimensionAnnotation(activeFrame.id, id, { visible: !visible })}
-                          className={`rounded-lg border px-1 py-1.5 text-[10px] font-semibold ${
-                            visible ? 'border-[#D48B16] bg-[#D48B16]/10 text-[#D48B16]' : 'border-slate-200 text-slate-400 dark:border-slate-700'
-                          }`}
-                        >
-                          {DIMENSION_LABELS[id][isArabic ? 'ar' : 'en']}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <div className="flex items-center justify-between gap-3">
-                    <label className="text-[11px] text-slate-500">{isArabic ? 'لون الخط' : 'Line color'}</label>
-                    <input
-                      type="color"
-                      aria-label={isArabic ? 'لون خطوط القياس' : 'Dimension line color'}
-                      value={dimensionColor}
-                      onChange={(event) => setDimensionColor(event.target.value)}
-                      className="h-8 w-12 cursor-pointer rounded border-0 bg-transparent"
-                    />
-                  </div>
-
-                  <label className="block space-y-1">
-                    <span className="flex justify-between text-[11px] text-slate-500">
-                      <span>{isArabic ? 'سمك الخط' : 'Line thickness'}</span>
-                      <span>{dimensionThickness}px</span>
-                    </span>
-                    <input
-                      type="range"
-                      min="1"
-                      max="5"
-                      step="1"
-                      value={dimensionThickness}
-                      onChange={(event) => setDimensionThickness(Number(event.target.value))}
-                      className="w-full accent-[#D48B16]"
-                    />
+              <section className="space-y-3 border-t border-slate-100 pt-3 dark:border-slate-800">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300">
+                    {isArabic ? 'المقاسات' : 'Measurements'}
                   </label>
-
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-slate-500">{isArabic ? 'شكل الأرقام' : 'Digits'}</span>
-                    <div className="flex gap-1">
-                      {(['latin', 'arabic'] as const).map((style) => (
-                        <button
-                          key={style}
-                          type="button"
-                          aria-pressed={digitStyle === style}
-                          onClick={() => setDigitStyle(style)}
-                          className={`rounded-md px-2 py-1 text-[10px] font-semibold ${
-                            digitStyle === style ? 'bg-[#D48B16] text-slate-950' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'
-                          }`}
-                        >
-                          {style === 'latin' ? '123' : '١٢٣'}
-                        </button>
-                      ))}
-                    </div>
+                  <div className="flex gap-1">
+                    {(['cm', 'mm', 'in'] as const).map((unit) => (
+                      <button key={unit} type="button" onClick={() => changeDimensionUnit(unit)} aria-pressed={(activeFrame.dimUnit || 'cm') === unit} className={`min-h-11 rounded-lg px-2 text-sm font-bold ${(activeFrame.dimUnit || 'cm') === unit ? 'bg-[#D48B16] text-slate-950' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}>
+                        {unit === 'cm' ? (isArabic ? 'سم' : 'cm') : unit === 'mm' ? (isArabic ? 'مم' : 'mm') : (isArabic ? 'بوصة' : 'in')}
+                      </button>
+                    ))}
                   </div>
                 </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => { setDimensionsVisible(true); setAllMeasuresVisible(true); }} className="min-h-11 rounded-lg border border-slate-200 px-2 text-sm dark:border-slate-700">{isArabic ? 'إظهار الكل' : 'Show all'}</button>
+                  <button type="button" onClick={() => setAllMeasuresVisible(false)} className="min-h-11 rounded-lg border border-slate-200 px-2 text-sm dark:border-slate-700">{isArabic ? 'إخفاء الكل' : 'Hide all'}</button>
+                  <button type="button" onClick={() => { setDimensionShowNames(false); setFrames((previous) => previous.map((frame) => ({ ...frame, dimensionMeasures: (frame.dimensionMeasures || []).map((measure) => ({ ...measure, showName: false })) }))); }} className="min-h-11 rounded-lg border border-slate-200 px-2 text-sm dark:border-slate-700">{isArabic ? 'إخفاء الأسماء من الكل' : 'Hide all names'}</button>
+                  <button type="button" onClick={() => { setDimensionShowNames(true); setFrames((previous) => previous.map((frame) => ({ ...frame, dimensionMeasures: (frame.dimensionMeasures || []).map((measure) => ({ ...measure, showName: true })) }))); }} className="min-h-11 rounded-lg border border-slate-200 px-2 text-sm dark:border-slate-700">{isArabic ? 'إظهار الأسماء' : 'Show names'}</button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <label className="flex min-h-11 items-center gap-2 text-sm">
+                    <input type="checkbox" checked={dimensionListMode} onChange={(event) => setDimensionListMode(event.target.checked)} />
+                    <List className="h-4 w-4" />{isArabic ? 'عرض كقائمة' : 'List view'}
+                  </label>
+                  <label className="flex min-h-11 items-center gap-2 text-sm">
+                    <input type="checkbox" checked={dimensionsVisible} onChange={(event) => setDimensionsVisible(event.target.checked)} />
+                    {isArabic ? 'إظهار المقاسات' : 'Show measures'}
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex items-center justify-between gap-2 text-sm">
+                    <span>{isArabic ? 'لون الخط' : 'Line color'}</span>
+                    <input type="color" value={dimensionColor} onChange={(event) => setGlobalDimensionColor(event.target.value)} className="h-9 w-12 bg-transparent" />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 text-sm">
+                    <span>{isArabic ? 'سمك الخط' : 'Thickness'}</span>
+                    <select value={dimensionThickness} onChange={(event) => setGlobalDimensionThickness(Number(event.target.value))} className="min-h-11 rounded border bg-white px-2 dark:bg-slate-900">
+                      {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}px</option>)}
+                    </select>
+                  </label>
+                </div>
+                <label className="flex items-center justify-between gap-2 text-sm">
+                  <span>{isArabic ? 'رؤوس القياس' : 'Line ends'}</span>
+                  <select value={dimensionArrowStyle} onChange={(event) => setDimensionArrowStyle(event.target.value as typeof dimensionArrowStyle)} className="min-h-11 rounded border bg-white px-2 dark:bg-slate-900">
+                    <option value="arrows">{isArabic ? 'أسهم' : 'Arrows'}</option>
+                    <option value="ticks">{isArabic ? 'علامات' : 'Ticks'}</option>
+                    <option value="dots">{isArabic ? 'نقاط' : 'Dots'}</option>
+                  </select>
+                </label>
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span>{isArabic ? 'شكل الأرقام' : 'Digits'}</span>
+                  <div className="flex gap-1">
+                    {(['latin', 'arabic'] as const).map((style) => (
+                      <button key={style} type="button" aria-pressed={digitStyle === style} onClick={() => setDigitStyle(style)} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${digitStyle === style ? 'bg-[#D48B16] text-slate-950' : 'bg-slate-100 text-slate-500 dark:bg-slate-800'}`}>
+                        {style === 'latin' ? '123' : '١٢٣'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button type="button" onClick={() => { setShowAddMeasure(true); setNewMeasureKind(null); }} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#0F2952] px-4 text-sm font-bold text-white dark:bg-[#D48B16] dark:text-[#0F2952]">
+                  <Plus className="h-4 w-4" />{isArabic ? 'إضافة مقاس' : 'Add measure'}
+                </button>
+
+                {showAddMeasure && (
+                  <div role="dialog" aria-modal="true" aria-label={isArabic ? 'إضافة مقاس' : 'Add measurement'} className="space-y-3 rounded-xl border border-[#D48B16]/50 bg-slate-50 p-3 dark:bg-slate-900">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold">{isArabic ? 'اختيار نوع المقاس' : 'Choose measurement'}</h4>
+                      <button type="button" onClick={() => setShowAddMeasure(false)} aria-label={isArabic ? 'إغلاق' : 'Close'} className="min-h-11 min-w-11 rounded-lg"><X className="mx-auto h-4 w-4" /></button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        ['height', 'الارتفاع'], ['width', 'العرض'], ['length', 'الطول'], ['depth', 'العمق'],
+                        ['diameter', 'القطر'], ['side', 'الجانب'], ['strap', 'الحزام'], ['drop', 'السقوط (للنجف)'],
+                        ['tier', 'الطبقة/الدور'], ['custom', 'مقاس مخصص']
+                      ] as Array<[MeasureKind, string]>).map(([kind, label]) => (
+                        <button key={kind} type="button" aria-pressed={newMeasureKind === kind} onClick={() => { setNewMeasureKind(kind); setNewMeasureName(kind === 'custom' ? '' : label); }} className={`min-h-11 rounded-lg border px-2 text-sm ${newMeasureKind === kind ? 'border-[#D48B16] bg-[#D48B16]/10' : 'border-slate-200 dark:border-slate-700'}`}>{isArabic ? label : kind}</button>
+                      ))}
+                    </div>
+                    {newMeasureKind && (
+                      <div className="space-y-2">
+                        {(newMeasureKind === 'custom' || ['tier', 'diameter', 'height'].includes(newMeasureKind) && (activeFrame.dimensionMeasures || []).some((measure) => measure.kind === newMeasureKind)) && (
+                          <label className="block space-y-1 text-sm">
+                            <span>{isArabic ? 'اسم المقاس' : 'Measure name'}</span>
+                            <input value={newMeasureName} onChange={(event) => setNewMeasureName(event.target.value)} placeholder={isArabic ? 'مثال: قطر الدور 2' : 'e.g. Tier 2 diameter'} className="min-h-11 w-full rounded-lg border px-3 dark:border-slate-700 dark:bg-slate-950" />
+                          </label>
+                        )}
+                        <label className="block space-y-1 text-sm">
+                          <span>{isArabic ? `القيمة (${dimensionUnitLabel(activeFrame.dimUnit)})` : `Value (${dimensionUnitLabel(activeFrame.dimUnit)})`}</span>
+                          <input type="number" min="0" step="any" value={newMeasureValue} onChange={(event) => setNewMeasureValue(event.target.value)} className="min-h-11 w-full rounded-lg border px-3 dark:border-slate-700 dark:bg-slate-950" />
+                        </label>
+                        <button type="button" disabled={!newMeasureValue || Number(newMeasureValue) < 0} onClick={addDimensionMeasure} className="min-h-11 w-full rounded-lg bg-[#D48B16] px-3 text-sm font-bold text-[#0F2952] disabled:opacity-40">{isArabic ? 'إضافة ووضع على الصورة' : 'Add and place'}</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  {(activeFrame.dimensionMeasures || []).map((measure) => (
+                    <div key={measure.id} className="space-y-2 rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                      <div className="flex items-center gap-2">
+                        <button type="button" aria-label={measure.visible ? 'إخفاء المقاس' : 'إظهار المقاس'} onClick={() => updateDimensionMeasure(activeFrame.id, measure.id, { visible: !measure.visible })} className="min-h-11 min-w-11 rounded-lg border dark:border-slate-700">
+                          {measure.visible ? <Eye className="mx-auto h-4 w-4" /> : <EyeOff className="mx-auto h-4 w-4" />}
+                        </button>
+                        <input value={measure.label} onChange={(event) => updateDimensionMeasure(activeFrame.id, measure.id, { label: event.target.value })} aria-label="اسم المقاس" className="min-h-11 min-w-0 flex-1 rounded-lg border px-2 text-sm dark:border-slate-700 dark:bg-slate-900" />
+                        <button type="button" onClick={() => updateDimensionMeasure(activeFrame.id, measure.id, { showName: !measure.showName })} aria-pressed={measure.showName} className="min-h-11 rounded-lg border px-2 text-xs dark:border-slate-700">{isArabic ? 'الاسم' : 'Name'}</button>
+                        <button type="button" aria-label="نسخ المقاس" onClick={() => {
+                          const duplicate = { ...measure, id: `${measure.kind}-${Date.now().toString(36)}`, label: `${measure.label} ${((activeFrame.dimensionMeasures || []).filter((item) => item.kind === measure.kind).length + 1)}`, start: { x: clamp(measure.start.x + 0.04, 0.04, 0.96), y: clamp(measure.start.y + 0.04, 0.04, 0.96) }, end: { x: clamp(measure.end.x + 0.04, 0.04, 0.96), y: clamp(measure.end.y + 0.04, 0.04, 0.96) } };
+                          setFrames((previous) => previous.map((frame) => frame.id === activeFrame.id ? { ...frame, dimensionMeasures: [...(frame.dimensionMeasures || []), duplicate] } : frame));
+                        }} className="min-h-11 min-w-11 rounded-lg border dark:border-slate-700"><CopyPlus className="mx-auto h-4 w-4" /></button>
+                        <button type="button" aria-label="حذف المقاس" onClick={() => setFrames((previous) => previous.map((frame) => frame.id === activeFrame.id ? { ...frame, dimensionMeasures: (frame.dimensionMeasures || []).filter((item) => item.id !== measure.id) } : frame))} className="min-h-11 min-w-11 rounded-lg border border-red-300 text-red-600"><Trash2 className="mx-auto h-4 w-4" /></button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="space-y-1 text-xs">
+                          <span>{isArabic ? 'القيمة' : 'Value'}</span>
+                          <input type="number" min="0" step="any" value={measure.value} onChange={(event) => updateDimensionMeasure(activeFrame.id, measure.id, { value: Number(event.target.value) || 0 })} className="min-h-11 w-full rounded-lg border px-2 text-sm dark:border-slate-700 dark:bg-slate-900" />
+                        </label>
+                        <label className="space-y-1 text-xs">
+                          <span>{isArabic ? 'اتجاه الخط' : 'Line constraint'}</span>
+                          <button type="button" onClick={() => updateDimensionMeasure(activeFrame.id, measure.id, {
+                            constraint: measure.constraint === 'free'
+                              ? (defaultConstraint(measure.kind) === 'free' ? 'horizontal' : defaultConstraint(measure.kind))
+                              : 'free'
+                          })} className="min-h-11 w-full rounded-lg border px-2 text-sm dark:border-slate-700">
+                            {measure.constraint === 'free' ? (isArabic ? 'حر' : 'Free') : (isArabic ? 'مستقيم' : 'Straight')}
+                          </button>
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
 
               {/* Specific frame tuning: Macro callout (Frame 2) */}
               {activeFrame.type === 'macro' && (
